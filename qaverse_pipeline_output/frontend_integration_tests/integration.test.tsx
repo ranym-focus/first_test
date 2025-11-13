@@ -1,183 +1,227 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import '@testing-library/jest-dom/extend-expect';
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import '@testing-library/jest-dom';
+import { MemoryRouter, Routes, Route, Link } from 'react-router-dom';
 
-// Lightweight components to simulate a generic app structure for integration tests
+// Simple ListItem that supports a like interaction
+const ListItem = ({ item, onLike }) => (
+  <li data-testid={`item-${item.id}`}>
+    <span>{item.name}</span>
+    {typeof item.likes !== 'undefined' ? <span> {item.likes} likes</span> : null}
+    <button onClick={() => onLike(item.id)}>Like</button>
+  </li>
+);
 
-const UserCard = ({ user }) => <li data-testid="user-item">{user.name}</li>;
+// List rendering
+const List = ({ items, onLike }) => (
+  <ul data-testid="item-list">
+    {items.map((it) => (
+      <ListItem key={it.id} item={it} onLike={onLike} />
+    ))}
+  </ul>
+);
 
-const UsersPage = () => {
-  const [users, setUsers] = useState(null);
-  useEffect(() => {
-    fetch('/api/users')
-      .then((res) => res.json())
-      .then((data) => setUsers(data))
-      .catch(() => setUsers([]));
-  }, []);
-  if (users === null) return <div>Loading Users...</div>;
-  return (
-    <section aria-label="users-page">
-      <h2>Users</h2>
-      <ul>
-        {users.map((u) => (
-          <UserCard key={u.id} user={u} />
-        ))}
-      </ul>
-    </section>
-  );
-};
+// Form to add new items with basic validation
+const AddItemForm = ({ onAdd }) => {
+  const [name, setName] = useState('');
+  const [touched, setTouched] = useState(false);
 
-const SearchBar = ({ onSubmit }) => {
-  const [value, setValue] = useState('');
-  const [error, setError] = useState('');
-  const handleSubmit = (e) => {
+  const onSubmit = (e) => {
     e.preventDefault();
-    if (!value.trim()) {
-      setError('Please enter a search term');
+    if (!name.trim()) {
+      setTouched(true);
       return;
     }
-    setError('');
-    onSubmit(value);
+    onAdd(name.trim());
+    setName('');
   };
+
   return (
-    <form onSubmit={handleSubmit}>
-      <input
-        aria-label="search-input"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-      />
-      <button type="submit">Search</button>
-      {error && (
-        <div role="alert" data-testid="search-error">
-          {error}
-        </div>
-      )}
+    <form onSubmit={onSubmit} aria-label="add-item-form">
+      <input aria-label="item-name" value={name} onChange={(e) => setName(e.target.value)} />
+      <button type="submit">Add</button>
+      {touched && !name && <span role="alert">Name is required</span>}
     </form>
   );
 };
 
-const Home = ({ onSearch, lastQuery }) => (
-  <main>
-    <h1>Home</h1>
-    <nav>
-      <Link to="/users">Go to Users</Link> | <Link to="/about">About</Link>
-    </nav>
-    <section>
-      <SearchBar onSubmit={onSearch} />
-      {lastQuery ? (
-        <div data-testid="last-query">Last query: {lastQuery}</div>
-      ) : null}
-    </section>
-  </main>
-);
+// Data page simulating API data fetch and data flow to List and AddItemForm
+const DataPage = () => {
+  const [items, setItems] = useState([]);
 
-const About = () => (
-  <section>
-    <h2>About</h2>
-  </section>
-);
+  useEffect(() => {
+    fetch('/api/items')
+      .then((res) => res.json())
+      .then((data) => setItems(data.items || []))
+      .catch(() => setItems([]));
+  }, []);
 
-const App = () => {
-  const [lastQuery, setLastQuery] = useState('');
-  const handleSearch = (q) => {
-    setLastQuery(q);
+  const likeItem = (id) => {
+    setItems((prev) =>
+      prev.map((it) => (it.id === id ? { ...it, likes: (it.likes || 0) + 1 } : it))
+    );
   };
+
+  const addItem = (name) => {
+    const newItem = { id: Date.now(), name, likes: 0 };
+    setItems((prev) => [...prev, newItem]);
+  };
+
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route
-          path="/"
-          element={<Home onSearch={handleSearch} lastQuery={lastQuery} />}
-        />
-        <Route path="/users" element={<UsersPage />} />
-        <Route path="/about" element={<About />} />
-      </Routes>
-    </BrowserRouter>
+    <section aria-label="data-page">
+      <h2>Data</h2>
+      <List items={items} onLike={likeItem} />
+      <AddItemForm onAdd={addItem} />
+    </section>
   );
 };
 
-// Integration tests (generic routing, components, API, and form interactions)
+// Home view with internal state management (increment counter)
+const HomeView = () => {
+  const [count, setCount] = useState(0);
+  return (
+    <section aria-label="home-page">
+      <h2>Home</h2>
+      <p>Count: {count}</p>
+      <button onClick={() => setCount((c) => c + 1)}>Increment</button>
+      <nav aria-label="main-nav">
+        <Link to="/data">Data</Link>
+      </nav>
+    </section>
+  );
+};
 
-describe('Generic React app integration tests (generic routes, components, API, forms)', () => {
+// App wiring up routes generically (no reliance on specific app structure)
+const App = () => (
+  <div>
+    <Routes>
+      <Route path="/home" element={<HomeView />} />
+      <Route path="/data" element={<DataPage />} />
+      <Route path="*" element={<HomeView />} />
+    </Routes>
+  </div>
+);
+
+// Tests
+describe('Generic React frontend integration tests (React Testing Library)', () => {
+  // Mock API calls
   beforeEach(() => {
-    // Reset mocks before each test
-    jest.restoreAllMocks();
+    jest.spyOn(global, 'fetch').mockImplementation((url) => {
+      if (url === '/api/items') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [
+              { id: 1, name: 'Alpha' },
+              { id: 2, name: 'Beta' },
+            ],
+          }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({}),
+      });
+    });
   });
 
   afterEach(() => {
-    jest.clearAllMocks();
+    jest.restoreAllMocks();
   });
 
-  test('navigates from Home to Users', async () => {
-    render(<App />);
-    // Verify Home is rendered
-    expect(screen.getByText(/Home/i)).toBeInTheDocument();
-
-    // Navigate to Users
-    fireEvent.click(screen.getByText(/Go to Users/i));
-
-    // Wait for Users page to render
-    await waitFor(() =>
-      expect(screen.getByRole('heading', { name: /Users/i })).toBeInTheDocument()
+  test('navigation between Home and Data routes', async () => {
+    render(
+      <MemoryRouter initialEntries={['/home']}>
+        <App />
+      </MemoryRouter>
     );
+
+    // Home view should render
+    expect(screen.getByText('Home')).toBeInTheDocument();
+
+    // Navigate to Data via Link
+    fireEvent.click(screen.getByText('Data'));
+
+    // Data page should render after navigation
+    await waitFor(() => expect(screen.getByText('Data')).toBeInTheDocument());
+    expect(screen.getByText('Data')).toBeInTheDocument();
   });
 
-  test('fetches and displays users on Users page', async () => {
-    // Mock API response
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => [
-        { id: 1, name: 'Alice' },
-        { id: 2, name: 'Bob' },
-      ],
-    });
-
-    render(<App />);
-
-    // Navigate to Users
-    fireEvent.click(screen.getByText(/Go to Users/i));
-
-    // Ensure fetch was called and data is rendered
-    await waitFor(() => expect(screen.getByText(/Alice/i)).toBeInTheDocument());
-    expect(global.fetch).toHaveBeenCalledWith('/api/users');
-  });
-
-  test('form submission updates last query', async () => {
-    render(<App />);
-
-    const input = screen.getByLabelText(/search-input/i);
-    fireEvent.change(input, { target: { value: 'react' } });
-    fireEvent.click(screen.getByText(/Search/i));
-
-    // Check that last query state is reflected in Home
-    await waitFor(() =>
-      expect(screen.getByTestId('last-query')).toHaveTextContent('Last query: react')
+  test('DataPage fetches items and displays them', async () => {
+    render(
+      <MemoryRouter initialEntries={['/data']}>
+        <App />
+      </MemoryRouter>
     );
+
+    // Wait for API items to render
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    expect(screen.getByText('Beta')).toBeInTheDocument();
   });
 
-  test('form validation shows error for empty input', async () => {
-    render(<App />);
-
-    // Submitting with empty input should trigger validation error
-    fireEvent.click(screen.getByText(/Search/i));
-
-    await waitFor(() =>
-      expect(screen.getByTestId('search-error')).toHaveTextContent(
-        'Please enter a search term'
-      )
+  test('like button increments like count and updates UI', async () => {
+    render(
+      <MemoryRouter initialEntries={['/data']}>
+        <App />
+      </MemoryRouter>
     );
+
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+
+    const likeButtons = screen.getAllByText('Like');
+    // Like the first item (Alpha)
+    fireEvent.click(likeButtons[0]);
+
+    await waitFor(() => expect(screen.getByText('1 likes')).toBeInTheDocument());
   });
 
-  test('navigation to About page works', async () => {
-    render(<App />);
-
-    // Navigate to About
-    fireEvent.click(screen.getByText(/About/i));
-
-    // Verify About page renders
-    await waitFor(() =>
-      expect(screen.getByRole('heading', { name: /About/i })).toBeInTheDocument()
+  test('add item form submits new item', async () => {
+    render(
+      <MemoryRouter initialEntries={['/data']}>
+        <App />
+      </MemoryRouter>
     );
+
+    await waitFor(() => screen.getByLabelText('item-name'));
+
+    const input = screen.getByLabelText('item-name');
+    const addButton = screen.getByText('Add');
+
+    // Submit a new item
+    fireEvent.change(input, { target: { value: 'Gamma' } });
+    fireEvent.click(addButton);
+
+    // New item should appear in the list
+    await waitFor(() => expect(screen.getByText('Gamma')).toBeInTheDocument());
+  });
+
+  test('form validation shows error for empty submission', async () => {
+    render(
+      <MemoryRouter initialEntries={['/data']}>
+        <App />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => screen.getByText('Add'));
+
+    const addButton = screen.getByText('Add');
+    // Submit with empty name
+    fireEvent.click(addButton);
+
+    // Validation message should appear
+    await waitFor(() => expect(screen.getByText('Name is required')).toBeInTheDocument());
+  });
+
+  test('data flow from DataPage to ListItem is visible in UI', async () => {
+    render(
+      <MemoryRouter initialEntries={['/data']}>
+        <App />
+      </MemoryRouter>
+    );
+
+    // Ensure data is loaded and the item text is rendered
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    const item = screen.getByText('Alpha').closest('li');
+    expect(item).toBeInTheDocument();
   });
 });

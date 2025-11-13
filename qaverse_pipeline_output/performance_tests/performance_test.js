@@ -1,110 +1,192 @@
 import http from 'k6/http';
-import { check, group, sleep } from 'k6';
-import { randomSeed, randomIntBetween } from 'k6';
+import { check, sleep } from 'k6';
+  
+// Base API URL (can be overridden with BASE_URL env variable)
+const BASE_URL = __ENV.BASE_URL || 'https://api.example.com';
 
-// Base URL for the API (override via BASE_URL env variable)
-const BASE_URL = __ENV.BASE_URL || 'https://example.com/api/v1';
+// Generic endpoints (generic API performance tests)
+const endpoints = [
+  { name: 'GET /api/v1/resource', path: '/api/v1/resource', method: 'GET' },
+  { name: 'POST /api/v1/resource', path: '/api/v1/resource', method: 'POST' },
+  { name: 'GET /api/v1/data/summary', path: '/api/v1/data/summary', method: 'GET' },
+  { name: 'GET /api/v1/database/heavy', path: '/api/v1/database/heavy', method: 'GET' } // database-heavy endpoint
+];
 
-function getHeaders(token) {
-  const headers = {
-    'Content-Type': 'application/json',
-  };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  return headers;
+// Heavy endpoint path for specialized load
+const heavyPath = '/api/v1/database/heavy';
+
+// Simple random helper
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-export let options = {
-  thresholds: {
-    http_req_duration: ['p(95)<500', 'p(99)<1000'], // p95 < 500ms, p99 < 1000ms
-    http_req_failed: ['rate<0.01'], // error rate < 1%
-  },
-  stages: [
-    { duration: '2m', target: 50 },    // Baseline: 10-50 users
-    { duration: '4m', target: 200 },   // Normal: 100-200 users
-    { duration: '5m', target: 700 },   // Stress: 500+ users
-    { duration: '1m', target: 1000 },  // Spike: jump to 1000 users
-    { duration: '3m', target: 0 },     // End: ramp down
-  ],
-  discardResponseBodies: true,
-};
+// Pick a random endpoint for load distribution
+function pickEndpoint() {
+  return endpoints[randInt(0, endpoints.length - 1)];
+}
 
-export function setup() {
-  const res = http.get(`${BASE_URL}/health`);
-  const ok = check(res, { 'health-OK': (r) => r.status === 200 });
-  const token = ok ? 'setup-token' : '';
-  if (ok) {
-    // Warm-up lightweight endpoint to simulate login/session setup
-    http.get(`${BASE_URL}/items`, { headers: getHeaders(token) });
+// Perform a request to a given endpoint
+function doRequest(ep) {
+  const url = `${BASE_URL}${ep.path}`;
+  const headers = { 'Content-Type': 'application/json' };
+  let res;
+
+  // Use simple payloads for POST
+  if (ep.method === 'POST') {
+    const payload = JSON.stringify({ ts: Date.now(), demo: 'perf-test' });
+    res = http.post(url, payload, { headers });
+  } else {
+    res = http.get(url);
   }
-  return { token };
+
+  check(res, {
+    'status is 2xx': (r) => r && r.status >= 200 && r.status < 300,
+  });
+
+  return res;
 }
 
-export function teardown(data) {
-  const headers = getHeaders(data?.token);
-  // Best-effort cleanup endpoint
-  http.post(`${BASE_URL}/cleanup`, JSON.stringify({ action: 'teardown' }), { headers });
+// Baseline/Normal/Stress: normal endpoint usage
+export function normalUser() {
+  const ep = pickEndpoint();
+  doRequest(ep);
+
+  // Small think time to simulate real users
+  sleep(randInt(50, 250) / 1000);
 }
 
-export default function (data) {
-  const token = data?.token || '';
-  const headers = getHeaders(token);
+// Spike: sudden surge to high concurrency
+export function spikeUser() {
+  // Simulate rapid requests for a short burst
+  const burstCount = randInt(15, 25);
+  for (let i = 0; i < burstCount; i++) {
+    const ep = pickEndpoint();
+    doRequest(ep);
+  }
+  // Minimal pause between bursts
+  sleep(randInt(20, 60) / 1000);
+}
 
-  // Baseline: GET list of items
-  group('GET /items', () => {
-    const res = http.get(`${BASE_URL}/items`, { headers });
+// Heavy: specifically target database-heavy endpoints with higher load
+export function heavyUser() {
+  // Hit the heavy endpoint multiple times per iteration to stress DB-heavy path
+  for (let i = 0; i < 3; i++) {
+    const url = `${BASE_URL}${heavyPath}`;
+    const payload = JSON.stringify({ query: 'select * from large_table', depth: 'full' });
+    const res = http.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
+
     check(res, {
-      'GET /items status 200': (r) => r.status === 200,
+      'heavy endpoint status is 200': (r) => r && r.status === 200,
     });
-  });
 
-  // GET item by random id
-  group('GET /items/{id}', () => {
-    const id = Math.floor(Math.random() * 1000) + 1;
-    const res = http.get(`${BASE_URL}/items/${id}`, { headers });
-    check(res, {
-      'GET /items/{id} status 200/404': (r) => [200, 404].includes(r.status),
-    });
-  });
+    // Very short pause to maintain high throughput
+    sleep(40 / 1000);
+  }
 
-  // POST create item (writes)
-  group('POST /items', () => {
-    const payload = JSON.stringify({
-      name: `perf-item-${__VU}-${__ITER}`,
-      value: Math.floor(Math.random() * 1000),
-    });
-    const res = http.post(`${BASE_URL}/items`, payload, { headers });
-    check(res, {
-      'POST /items created/updated': (r) => r.status === 201 || r.status === 200,
-    });
-  });
+  // Optionally hit a normal endpoint as a secondary operation
+  const ep = endpoints.find(e => e.path === '/api/v1/resource');
+  if (ep) {
+    doRequest(ep);
+  }
+  sleep(randInt(50, 150) / 1000);
+}
 
-  // Heavy database endpoint with higher load
-  group('GET /database/heavy', () => {
-    // 60% chance to hit heavy endpoint
-    if (Math.random() < 0.6) {
-      const res = http.get(`${BASE_URL}/database/heavy`, { headers });
-      check(res, { 'GET /database/heavy status 200': (r) => r.status === 200 });
-    } else {
-      // lighter path occasionally
-      const res = http.get(`${BASE_URL}/database/light`, { headers });
-      check(res, { 'GET /database/light status 200/304': (r) => r.status === 200 || r.status === 304 });
+// Warm-up/setup: run a few quick requests to prime caches and bodies
+export function setup() {
+  // Gentle warm-up across endpoints
+  for (let i = 0; i < endpoints.length; i++) {
+    const ep = endpoints[i];
+    try {
+      http.get(`${BASE_URL}${ep.path}`);
+    } catch (e) {
+      // ignore warm-up errors
     }
-  });
-
-  // Heavy operation simulating DB iteration or long-running query
-  group('POST /e2e/iterate (heavy)', () => {
-    const payload = JSON.stringify({ iterations: 5000, seed: __VU * 100 + __ITER });
-    const res = http.post(`${BASE_URL}/e2e/iterate`, payload, { headers });
-    check(res, { 'POST /e2e/iterate status 200': (r) => r.status === 200 });
-  });
-
-  // Optional auth refresh to emulate authenticated load
-  group('GET /auth/refresh (optional)', () => {
-    if (token) {
-      const res = http.get(`${BASE_URL}/auth/refresh`, { headers });
-      check(res, { 'GET /auth/refresh 200/204': (r) => r.status === 200 || r.status === 204 });
-    }
-  });
-
-  sleep(1);
+  }
+  return { warmedUp: true };
 }
+
+// Teardown: perform cleanup if a teardown endpoint exists
+export function teardown(_data) {
+  try {
+    const url = `${BASE_URL}/health/teardown`;
+    http.post(url, JSON.stringify({ test: 'teardown' }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (_) {
+    // ignore teardown errors
+  }
+}
+
+// Custom summary to export results for easier analysis
+export function handleSummary(data) {
+  // You can customize this to generate more friendly reports
+  return {
+    'summary.json': JSON.stringify(data, null, 2),
+  };
+}
+
+// Performance test configuration and scenarios
+export const options = {
+  discardResponseBodies: true,
+  thresholds: {
+    // Ensure fast responses
+    'http_req_duration': ['p(95)<500', 'p(99)<1000'],
+    // Error rate under 1%
+    'http_req_failed': ['rate<0.01'],
+  },
+  scenarios: {
+    // Baseline load: 10-50 virtual users
+    baseline: {
+      executor: 'ramping-vus',
+      exec: 'normalUser',
+      startVUs: 10,
+      stages: [
+        { duration: '2m', target: 50 },
+        { duration: '3m', target: 50 }
+      ],
+    },
+    // Normal load: 100-200 users
+    normal: {
+      executor: 'ramping-vus',
+      exec: 'normalUser',
+      startVUs: 50,
+      stages: [
+        { duration: '2m', target: 200 },
+        { duration: '4m', target: 200 }
+      ],
+    },
+    // Stress test: 500+ users
+    stress: {
+      executor: 'ramping-vus',
+      exec: 'normalUser',
+      startVUs: 100,
+      stages: [
+        { duration: '1m', target: 500 },
+        { duration: '5m', target: 500 }
+      ],
+    },
+    // Spike test: sudden increase to 1000 users
+    spike: {
+      executor: 'ramping-vus',
+      exec: 'spikeUser',
+      startVUs: 0,
+      stages: [
+        { duration: '0m', target: 0 },
+        { duration: '0m', target: 0 },
+        { duration: '1m', target: 0 },
+        { duration: '1m', target: 1000 },
+        { duration: '2m', target: 1000 },
+        { duration: '0m', target: 0 }
+      ],
+    },
+    // Database-heavy endpoints under higher load
+    db_heavy: {
+      executor: 'ramping-vus',
+      exec: 'heavyUser',
+      startVUs: 20,
+      stages: [
+        { duration: '2m', target: 100 },
+        { duration: '6m', target: 100 }
+      ],
+    }
+  },
+  // Optional: enable per-VU hot swapping, etc.
+};
