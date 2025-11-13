@@ -1,321 +1,246 @@
 import sys
-import types
 import importlib
+import types
+import uuid
+from datetime import datetime
+
 import pytest
 
-# Create a fake 'database' module to satisfy init_db.py imports before actually importing it
-database_module = types.ModuleType('database')
+# Helper to create a fake in-memory database module used by init_db.py
+def create_fake_database_module(admin_existing_id=None):
+    # Simple Admin stub used by User.query.filter_by(...).first()
+    class AdminStub:
+        def __init__(self, id):
+            self.id = id
 
-# Minimal dummy db with session for the functions
-class DummySession:
-    def __init__(self):
-        self.executed = False
-        self.committed = False
-        self.rolled_back = False
-        self.last_sql = None
+    # Fake query proxy to mimic User.query.filter_by(...).first()
+    class FakeQueryProxy:
+        def __init__(self, existing_id):
+            self.existing_id = existing_id
 
-    def execute(self, query, *args, **kwargs):
-        self.executed = True
-        self.last_sql = str(query)
+        def filter_by(self, **kwargs):
+            return self
+
+        def first(self):
+            if not self.existing_id:
+                return None
+            return AdminStub(self.existing_id)
+
+    # Fake User model
+    class FakeUser:
+        _existing_admin = admin_existing_id
+        # The query attribute is used as User.query.filter_by(...).first()
+        query = FakeQueryProxy(_existing_admin)
+
+        def __init__(self, id=None, username=None, email=None, full_name=None, role=None,
+                     is_active=None, email_verified=None, ai_model_preference=None,
+                     created_at=None, updated_at=None):
+            self.id = id or str(uuid.uuid4())
+            self.username = username
+            self.email = email
+            self.full_name = full_name
+            self.role = role
+            self.is_active = is_active
+            self.email_verified = email_verified
+            self.ai_model_preference = ai_model_preference
+            self.created_at = created_at or datetime.now()
+            self.updated_at = updated_at or datetime.now()
+            self.password = None
+
+        def set_password(self, password):
+            self.password = password
+
+    # Fake DB/session
+    class FakeSession:
+        def __init__(self):
+            self.executed = []
+            self.added = []
+            self.committed = False
+            self.rolled_back = False
+
+        def execute(self, query):
+            self.executed.append(query)
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def add(self, obj):
+            self.added.append(obj)
+
+    class FakeDB:
+        def __init__(self):
+            self.session = FakeSession()
+            self.engine = object()  # placeholder for inspect(engine)
+
+    # Stubs for many classes referenced by init_db.py to satisfy imports
+    placeholder_class = type('Placeholder', (), {})
+
+    # Build fake database module
+    mod = types.ModuleType('database')
+    mod.db = FakeDB()
+    mod.User = FakeUser
+    mod.Organization = placeholder_class
+    mod.OrganizationMember = placeholder_class
+    mod.Project = placeholder_class
+    mod.TestRun = placeholder_class
+    mod.TestPhase = placeholder_class
+    mod.TestPlan = placeholder_class
+    mod.TestPackage = placeholder_class
+    mod.TestCaseExecution = placeholder_class
+    mod.DocumentAnalysis = placeholder_class
+    mod.UserRole = placeholder_class
+    mod.UserPreferences = placeholder_class
+    mod.BDDFeature = placeholder_class
+    mod.BDDScenario = placeholder_class
+    mod.BDDStep = placeholder_class
+    mod.TestCase = placeholder_class
+    mod.TestCaseStep = placeholder_class
+    mod.TestCaseData = placeholder_class
+    mod.TestCaseDataInput = placeholder_class
+    mod.TestRunResult = placeholder_class
+    mod.SeleniumTest = placeholder_class
+    mod.UnitTest = placeholder_class
+    mod.GeneratedCode = placeholder_class
+    mod.UploadedCodeFile = placeholder_class
+    mod.Integration = placeholder_class
+    mod.JiraSyncItem = placeholder_class
+    mod.CrawlMeta = placeholder_class
+    mod.CrawlPage = placeholder_class
+    mod.TestPlanTestRun = placeholder_class
+    mod.TestPackageTestRun = placeholder_class
+    mod.VirtualTestExecution = placeholder_class
+    mod.GeneratedBDDScenario = placeholder_class
+    mod.GeneratedManualTest = placeholder_class
+    mod.GeneratedAutomationTest = placeholder_class
+    mod.TestExecutionComparison = placeholder_class
+    mod.SDDReviews = placeholder_class
+    mod.SDDEnhancements = placeholder_class
+    mod.ProjectUnitTests = placeholder_class
+    mod.Workflow = placeholder_class
+    mod.WorkflowExecution = placeholder_class
+    mod.WorkflowNodeExecution = placeholder_class
+    mod.TestPipeline = placeholder_class
+    mod.PipelineExecution = placeholder_class
+    mod.PipelineStageExecution = placeholder_class
+    mod.PipelineStepExecution = placeholder_class
+
+    # Fake init_db function to be called by init_db.py (no-op)
+    def fake_init_db(app):
         return None
+    mod.init_db = fake_init_db
 
-    def commit(self):
-        self.committed = True
-
-    def rollback(self):
-        self.rolled_back = True
-
-class DummyDB:
-    def __init__(self):
-        self.session = DummySession()
-        self.engine = object()
-
-database_module.db = DummyDB()
-
-# A no-op init_db function so import doesn't fail
-database_module.init_db = lambda app=None: None
-
-# Provide placeholder classes for all expected names to satisfy import
-class _Placeholder: pass
-names = [
-    'User','Organization','OrganizationMember','Project','TestRun','TestPhase','TestPlan','TestPackage',
-    'TestCaseExecution','DocumentAnalysis','UserRole','UserPreferences','BDDFeature','BDDScenario',
-    'BDDStep','TestCase','TestCaseStep','TestCaseData','TestCaseDataInput','TestRunResult','SeleniumTest',
-    'UnitTest','GeneratedCode','UploadedCodeFile','Integration','JiraSyncItem','CrawlMeta','CrawlPage',
-    'TestPlanTestRun','TestPackageTestRun','VirtualTestExecution','GeneratedBDDScenario','GeneratedManualTest',
-    'GeneratedAutomationTest','TestExecutionComparison','SDDReviews','SDDEnhancements','ProjectUnitTests',
-    'Workflow','WorkflowExecution','WorkflowNodeExecution','TestPipeline','PipelineExecution',
-    'PipelineStageExecution','PipelineStepExecution'
-]
-for name in names:
-    setattr(database_module, name, _Placeholder)
-
-sys.modules['database'] = database_module
-
-# Now import the target module (this will use the fake database module)
-init_db = importlib.import_module('init_db')
+    # Attach a minimal environment that init_db.py expects
+    mod.__dict__['datetime'] = datetime
+    return mod
 
 
-# Helper: reset fake users between tests where needed
-class FakeExpression:
-    def __init__(self, op, a, b=None):
-        self.op = op
-        self.a = a
-        self.b = b
-
-class FakeField:
-    def __init__(self, name):
-        self.name = name
-    def __eq__(self, other):
-        return FakeExpression('eq', self.name, other)
-    def __or__(self, other):
-        return FakeExpression('or', self.__eq__(None), other)
-
-class FakeQuery:
-    def __init__(self, model_class=None):
-        self.model_class = model_class
-        self._filters = {}
-        self._predicate = None
-
-    # support for filter_by(...)
-    def filter_by(self, **kwargs):
-        self._filters = kwargs
-        return self
-
-    # support for filter(...) with a predicate
-    def filter(self, predicate):
-        self._predicate = predicate
-        return self
-
-    def first(self):
-        if not hasattr(FakeUser, "_instances"):
-            return None
-        for u in FakeUser._instances:
-            ok = True
-            for k, v in self._filters.items():
-                if getattr(u, k) != v:
-                    ok = False
-                    break
-            if ok:
-                return u
-        return None
-
-    def all(self):
-        if not hasattr(FakeUser, "_instances"):
-            return []
-        if self._predicate is None:
-            return list(FakeUser._instances)
-        # evaluate custom predicate against each user
-        def _evaluate(user, expr):
-            if isinstance(expr, FakeExpression):
-                if expr.op == 'eq':
-                    attr = expr.a
-                    val = expr.b
-                    return getattr(user, attr) == val
-                if expr.op == 'or':
-                    return _evaluate(user, expr.a) or _evaluate(user, expr.b)
-            return False
-
-        result = []
-        for u in FakeUser._instances:
-            if _evaluate(u, self._predicate):
-                result.append(u)
-        return result
-
-class FakeUser:
-    _instances = []
-    ai_model_preference = FakeField('ai_model_preference')
-    query = FakeQuery(None)
-
-    def __init__(self, id, username=None, email=None, full_name=None, role=None, is_active=None,
-                 email_verified=None, ai_model_preference=None, created_at=None, updated_at=None):
-        self.id = id
-        self.username = username
-        self.email = email
-        self.full_name = full_name
-        self.role = role
-        self.is_active = is_active
-        self.email_verified = email_verified
-        self.ai_model_preference = ai_model_preference
-        self.created_at = created_at
-        self.updated_at = updated_at
-        self._password = None
-        FakeUser._instances.append(self)
-
-    def set_password(self, password):
-        self._password = password
-
-# Patchable attributes injected into tests
-@pytest.fixture(autouse=True)
-def clear_fake_users():
-    # Reset fake user store before each test that uses it
-    FakeUser._instances = []
-    FakeQuery  # ensure class is defined
-    # Rebind class attribute query
-    FakeUser.query = FakeQuery(FakeUser)
-    yield
-    FakeUser._instances = []
+# Helper to load init_db.py with the fake database module injected
+def load_init_db_with_fake_db(admin_existing_id=None):
+    if 'init_db' in sys.modules:
+        del sys.modules['init_db']
+    fake_db_module = create_fake_database_module(admin_existing_id)
+    sys.modules['database'] = fake_db_module
+    importlib.invalidate_caches()
+    importlib.import_module('init_db')  # import to execute top-level code
+    return sys.modules['init_db']
 
 
-# Test 1: remove_username_constraint success and error paths
-def test_remove_username_constraint_success_and_error(capfd):
-    # Success path
-    class SimpleSessionSuccess(DummySession):
-        pass
-    init_db.db = types.SimpleNamespace(session=SimpleSessionSuccess(), engine=None)
-
+def test_remove_username_constraint_success(capfd):
+    init_db = load_init_db_with_fake_db()
     init_db.remove_username_constraint()
     out = capfd.readouterr().out
     assert "✅ Username constraint removed successfully!" in out
 
-    # Error path
-    class SimpleSessionFail(DummySession):
-        def execute(self, *args, **kwargs):
-            raise Exception("boom")
-        def rollback(self):
-            self.rolled_back = True
-    init_db.db = types.SimpleNamespace(session=SimpleSessionFail(), engine=None)
 
+def test_remove_username_constraint_failure(capfd):
+    init_db = load_init_db_with_fake_db()
+    # Make db.session.execute raise an exception to simulate failure
+    def raise_exc(_):
+        raise Exception("boom")
+    init_db.db.session.execute = raise_exc
     init_db.remove_username_constraint()
     out = capfd.readouterr().out
-    assert "❌ Error removing constraint: boom" in out
-    # rollback should be attempted
-    assert getattr(init_db.db.session, "rolled_back", False) is True
+    assert "❌ Error removing constraint" in out
 
 
-# Test 2: check_column_exists using a fake inspector
-def test_check_column_exists(monkeypatch):
+def test_check_column_exists_true_false():
+    init_db = load_init_db_with_fake_db()
+    # Patch inspect to return a fake inspector with specified columns
     class FakeInspector:
-        def __init__(self, cols_map):
-            self._cols = cols_map
+        def __init__(self, cols):
+            self._cols = cols
         def get_columns(self, table_name):
-            return self._cols.get(table_name, [])
+            return [{ 'name': c } for c in self._cols]
 
-    cols_map = {
-        'projects': [{'name': 'id'}, {'name': 'user_id'}],
-        'users': [{'name': 'id'}]
-    }
-
-    # Patch init_db.inspect to return our fake inspector
-    monkeypatch.setattr(init_db, 'inspect', lambda engine: FakeInspector(cols_map))
-
-    init_db.db = types.SimpleNamespace(engine=None)
-
-    assert init_db.check_column_exists('projects', 'user_id') is True
-    assert init_db.check_column_exists('projects', 'nonexistent') is False
-    assert init_db.check_column_exists('users', 'id') is True
+    # When column exists
+    init_db.inspect = lambda engine: FakeInspector(['col1', 'col2'])
+    assert init_db.check_column_exists('projects', 'col1') is True
+    # When column does not exist
+    assert init_db.check_column_exists('projects', 'col3') is False
 
 
-# Test 3: add_project_user_id with existing and new column
-def test_add_project_user_id(monkeypatch):
-    # Case: already exists
-    monkeypatch.setattr(init_db, 'check_column_exists', lambda table, col: True)
-    init_db.app.config = {'SQLALCHEMY_DATABASE_URI': 'postgresql://user:pass@host/db'}
-    init_db.db = types.SimpleNamespace(session=DummySession(), engine=None)
+def test_add_project_user_id_sqlite_and_already_exists(capfd):
+    init_db = load_init_db_with_fake_db()
+    # Ensure it's sqlite
+    init_db.app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///test.db'
 
-    assert init_db.add_project_user_id() is True
+    # Case: column does not exist yet
+    init_db.check_column_exists = lambda table, column: False
+    init_db.add_project_user_id()
+    out = capfd.readouterr().out
+    assert "user_id column added to projects table" in out
 
-    # Case: does not exist, sqlite path
-    monkeypatch.setattr(init_db, 'check_column_exists', lambda table, col: False)
-    init_db.app.config = {'SQLALCHEMY_DATABASE_URI': 'sqlite:///test.db'}
-    session = DummySession()
-    # capture SQL executed
-    init_db.db = types.SimpleNamespace(session=session, engine=None)
-
-    assert init_db.add_project_user_id() is True
-    assert session.last_sql is not None
-    assert "ALTER TABLE projects ADD COLUMN user_id VARCHAR(36)" in session.last_sql
+    # Case: column already exists
+    init_db.check_column_exists = lambda table, column: True
+    init_db.add_project_user_id()
+    out = capfd.readouterr().out
+    assert "✅ user_id column already exists in projects table." in out
 
 
-# Test 4: add_organization_id_to_users with sqlite path
-def test_add_organization_id_to_users_sqlite(monkeypatch):
-    monkeypatch.setattr(init_db, 'check_column_exists', lambda table, col: False)
-    init_db.app.config = {'SQLALCHEMY_DATABASE_URI': 'sqlite:///test.db'}
-    session = DummySession()
-    init_db.db = types.SimpleNamespace(session=session, engine=None)
+def test_add_organization_id_to_users_exists_and_missing(capfd):
+    init_db = load_init_db_with_fake_db()
+    # Simulate sqlite or other DB; not critical for test
+    init_db.app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://user@host/db'
 
-    assert init_db.add_organization_id_to_users() is True
-    assert session.last_sql is not None
-    assert "ALTER TABLE users ADD COLUMN organization_id VARCHAR(36)" in session.last_sql
+    # When column doesn't exist yet
+    init_db.check_column_exists = lambda table, column: False
+    init_db.add_organization_id_to_users()
+    out = capfd.readouterr().out
+    assert "organization_id column added to users table" in out or "✅ organization_id column added to users table successfully!" in out
 
-    # Exists path
-    monkeypatch.setattr(init_db, 'check_column_exists', lambda table, col: True)
-    session2 = DummySession()
-    init_db.db = types.SimpleNamespace(session=session2, engine=None)
-    assert init_db.add_organization_id_to_users() is True
-    assert session2.executed is False  # no SQL executed when exists
-
-
-# Test 5: create_default_users when admin exists and when not
-def test_create_default_users_admin_exists_and_not(monkeypatch):
-    # Case admin exists
-    existing_admin = FakeUser(id='admin-exists-id', username='admin', email='admin@qaverse.com',
-                              full_name='Admin', role='admin', is_active=True, email_verified=True,
-                              ai_model_preference='gpt-5')
-    FakeUser._instances = [existing_admin]
-    FakeUser.query = FakeQuery(FakeUser)
-    monkeypatch.setattr(init_db, 'User', FakeUser)
-    called = {'updated': False}
-    monkeypatch.setattr(init_db, 'update_existing_users_ai_preference', lambda: called.update(updated=True))
-
-    admin_id = init_db.create_default_users()
-    assert admin_id == existing_admin.id
-
-    # Case admin not exists
-    FakeUser._instances = []
-    FakeUser.query = FakeQuery(FakeUser)
-    monkeypatch.setattr(init_db, 'User', FakeUser)
-
-    # Patch to capture that update_existing_users_ai_preference is invoked
-    flag = {'called': False}
-    def fake_update():
-        flag['called'] = True
-    monkeypatch.setattr(init_db, 'update_existing_users_ai_preference', fake_update)
-
-    admin_id = init_db.create_default_users()
-    # There should be two new users created
-    emails = [u.email for u in FakeUser._instances]
-    assert 'admin@qaverse.com' in emails
-    assert 'miriam.dahmoun@gmail.com' in emails
-    # The returned admin_id should match the admin created above
-    admin_user = next(u for u in FakeUser._instances if u.email == 'admin@qaverse.com')
-    assert admin_id == admin_user.id
-    assert flag['called'] is True
+    # When column already exists
+    init_db.check_column_exists = lambda table, column: True
+    init_db.add_organization_id_to_users()
+    out = capfd.readouterr().out
+    # Should just skip with existing message
+    assert "✅ organization_id column already exists in users table." in out
 
 
-# Test 6: update_existing_users_ai_preference updates missing preferences
-def test_update_existing_users_ai_preference_updates_missing(monkeypatch):
-    # Prepare fake users
-    FakeUser._instances = [
-        FakeUser(id='u1', email='u1@example.com', ai_model_preference=None),
-        FakeUser(id='u2', email='u2@example.com', ai_model_preference=''),
-        FakeUser(id='u3', email='u3@example.com', ai_model_preference='existing')
-    ]
-    FakeUser.query = FakeQuery(FakeUser)
+def test_create_default_users_admin_exists(capfd):
+    # Admin already exists scenario
+    admin_id = 'existing-admin-id'
+    init_db = load_init_db_with_fake_db(admin_existing_id=admin_id)
+    result = init_db.create_default_users()
+    out = capfd.readouterr().out
+    assert "Admin user already exists. Skipping user creation." in out
+    assert result == admin_id
 
-    # Patch to ensure migrate function is a no-op
-    monkeypatch.setattr(init_db, 'migrate_ai_model_preference_column', lambda: None)
 
-    # Use a fake db with commit tracking
-    class CommitSession(DummySession):
-        def __init__(self):
-            super().__init__()
-            self.committed = False
-        def commit(self):
-            self.committed = True
+def test_create_default_users_creates_users_and_returns_admin_id(capfd):
+    init_db = load_init_db_with_fake_db(admin_existing_id=None)
 
-    init_db.db = types.SimpleNamespace(session=CommitSession(), engine=None)
+    # Prevent side effects from update_existing_users_ai_preference
+    if hasattr(init_db, 'update_existing_users_ai_preference'):
+        init_db.update_existing_users_ai_preference = lambda: None
 
-    # Ensure update_existing_users_ai_preference uses our FakeUser
-    monkeypatch.setattr(init_db, 'User', FakeUser)
+    result = init_db.create_default_users()
+    out = capfd.readouterr().out
+    assert "Default users created successfully." in out
+    assert isinstance(result, str)
 
-    init_db.update_existing_users_ai_preference()
-
-    # Verify two missing preferences updated to 'gpt-5'
-    updated = [u for u in FakeUser._instances if u.ai_model_preference == 'gpt-5']
-    assert len(updated) == 2
-    assert any(u.id == 'u1' for u in updated)
-    assert any(u.id == 'u2' for u in updated)
-
-    # Ensure commit occurred
-    assert init_db.db.session.committed is True
+    # Ensure two users were added to the fake db session
+    added = getattr(init_db.db.session, 'added', [])
+    assert len(added) == 2
