@@ -1,171 +1,197 @@
-import { test, expect } from '@playwright/test';
+// e2e-playwright.e2e.js
+// Comprehensive Playwright E2E tests with setup, teardown, and helper utilities.
+// Note: Routes and UI elements are best-effort generic selectors. Adjust selectors to match your app.
+
+const { test, expect } = require('@playwright/test');
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
-const ROUTES = ['/dashboard', '/items', '/profile', '/settings'];
 
-const TEST_ITEM = {
-  name: 'E2E Test Item',
-  description: 'Created by an automated Playwright E2E test.'
-};
+const ROUTES = [
+  { name: 'Home', path: '/' },
+  { name: 'Dashboard', path: '/dashboard' },
+  { name: 'Items', path: '/items' },
+  { name: 'Settings', path: '/settings' },
+  { name: 'Profile', path: '/profile' }
+];
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// Helpers
+
+function fullURL(path) {
+  const base = BASE_URL.endsWith('/') ? BASE_URL.slice(0, -1) : BASE_URL;
+  const p = path.startsWith('/') ? path : '/' + path;
+  return base + p;
 }
 
-const Helpers = {
-  async navigateAndAssertRoutes(page) {
-    for (const route of ROUTES) {
-      const url = `${BASE_URL}${route}`;
-      const response = await page.goto(url, { waitUntil: 'networkidle' }).catch(() => null);
-      if (response) {
-        const status = response.status();
-        // Accept 2xx and redirects; consider 3xx as valid navigation
-        expect(status).toBeGreaterThanOrEqual(200);
-        expect(status).toBeLessThan(400);
+async function loginIfPossible(page) {
+  // Attempt to perform login if login form exists
+  const passwordInputs = page.locator('input[type="password"]');
+  if (await passwordInputs.count() === 0) return false;
+
+  const usernameInputs = page.locator('input[name="username"], input[name="email"]');
+  if (await usernameInputs.count() > 0) {
+    await usernameInputs.first().fill(process.env.TEST_USERNAME || 'test@example.com');
+  }
+
+  await passwordInputs.first().fill(process.env.TEST_PASSWORD || 'password');
+
+  const submitBtn = page.locator('button[type="submit"], button:has-text("Login"), button:has-text("Sign in")');
+  if (await submitBtn.count() > 0) {
+    await submitBtn.first().click();
+    // Wait for potential navigation after login
+    await page.waitForLoadState('networkidle').catch(() => {});
+    return true;
+  }
+
+  // If no explicit submit button, try form submit
+  const form = page.locator('form').first();
+  if (await form.count() > 0) {
+    await form.evaluate((f) => f.submit());
+    await page.waitForLoadState('networkidle').catch(() => {});
+    return true;
+  }
+
+  return true;
+}
+
+// Test suite
+
+test.describe('Comprehensive E2E Tests (Playwright)', () => {
+
+  test.beforeEach(async ({ page }) => {
+    // Navigate to base URL to initialize session
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  });
+
+  test('Navigate to core routes and verify basic existence', async ({ page }) => {
+    for (const r of ROUTES) {
+      const url = fullURL(r.path);
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+      // If navigation failed, fail this route test
+      if (!response) {
+        throw new Error(`Navigation to ${r.path} failed or timed out`);
+      }
+      // URL should be correct
+      expect(page.url()).toBe(url);
+
+      // Optional: verify a header that may exist for the route
+      const header = page.locator(`h1, h2, h3`, { hasText: r.name });
+      if (await header.count() > 0) {
+        await expect(header.first()).toBeVisible();
+      }
+
+      // Small wait to let dynamic content load if present
+      await page.waitForTimeout(200).catch(() => {});
+    }
+  });
+
+  test('CRUD flow for Items (create, read, update, delete)', async ({ page }) => {
+    const itemsURL = fullURL('/items');
+    await page.goto(itemsURL, { waitUntil: 'domcontentloaded' });
+
+    // Attempt login if authentication is required
+    await loginIfPossible(page);
+
+    // Create an item if "New Item" is present
+    const newItemBtn = page.locator('button', { hasText: 'New Item' }).first();
+    let createdName = '';
+    if (await newItemBtn.count() > 0) {
+      const baseName = 'E2E Item ' + Date.now();
+      createdName = baseName;
+
+      await newItemBtn.click();
+
+      // Fill name if a name input exists
+      const nameInput = page.locator('input[name="name"], input[data-testid="item-name"]');
+      if (await nameInput.count() > 0) {
+        await nameInput.first().fill(baseName);
       } else {
-        // If navigation failed (e.g., route not found), log and continue
-        console.warn(`Warning: Could not navigate to ${url}. The route may be unavailable in this environment.`);
+        // Fallback: type into focused input
+        await page.keyboard.type(baseName);
       }
 
-      // Optional: ensure page has loaded a common header if present
-      // const header = page.locator('[data-test="app-header"]');
-      // if (await header.count() > 0) {
-      //   await header.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
-      // }
-    }
-  },
-
-  async loginIfAvailable(page) {
-    await page.goto(BASE_URL, { waitUntil: 'networkidle' });
-    const loginForm = page.locator('[data-test="login-form"]');
-    if (await loginForm.count() > 0) {
-      const usernameInput = page.locator('[data-test="login-username"]');
-      const passwordInput = page.locator('[data-test="login-password"]');
-      const submitBtn = page.locator('[data-test="login-submit"]');
-      if ((await usernameInput.count()) > 0 && (await passwordInput.count()) > 0 && (await submitBtn.count()) > 0) {
-        await usernameInput.fill(process.env.TEST_USERNAME || 'testuser');
-        await passwordInput.fill(process.env.TEST_PASSWORD || 'password');
-        await submitBtn.click();
-        // Wait for potential redirect or user avatar
-        await page.waitForLoadState('networkidle');
-      }
-    }
-  },
-
-  async createItem(page, item) {
-    await page.goto(`${BASE_URL}/items`, { waitUntil: 'networkidle' });
-    const createBtn = page.locator('[data-test="create-item-button"]');
-    if ((await createBtn.count()) > 0) {
-      await createBtn.click();
-      const nameInput = page.locator('[data-test="item-name"]');
-      const descInput = page.locator('[data-test="item-description"]');
-      const saveBtn = page.locator('[data-test="save-item"]');
-      if ((await nameInput.count()) > 0) await nameInput.fill(item.name);
-      if ((await descInput.count()) > 0) await descInput.fill(item.description);
-      if ((await saveBtn.count()) > 0) await saveBtn.click();
-
-      // Wait for the item to appear in the list
-      const itemLocator = page.locator(`text="${item.name}"`);
-      await itemLocator.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
-    } else {
-      console.warn('Create item button not found. Skipping create step.');
-    }
-  },
-
-  async readItem(page, itemName) {
-    await page.goto(`${BASE_URL}/items`, { waitUntil: 'networkidle' });
-    const itemLocator = page.locator(`text="${itemName}"`).first();
-    await itemLocator.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-    return itemLocator;
-  },
-
-  async updateItem(page, oldName, newName) {
-    // Find the row with the old name and click edit
-    const row = page.locator(`tr:has-text("${oldName}")`).first();
-    const editBtn = row.locator('[data-test="edit-item"]');
-    if ((await editBtn.count()) > 0) {
-      await editBtn.click();
-      const nameInput = page.locator('[data-test="item-name"]');
-      if ((await nameInput.count()) > 0) {
-        await nameInput.fill(newName);
-        const saveBtn = page.locator('[data-test="save-item"]');
-        if ((await saveBtn.count()) > 0) {
-          await saveBtn.click();
-          // Verify updated name appears
-          const updatedLocator = page.locator(`text="${newName}"`).first();
-          await updatedLocator.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+      // Save the item
+      const saveBtn = page.locator('button[type="submit"], button', { hasText: 'Save' }).first();
+      if (await saveBtn.count() > 0) {
+        await saveBtn.click();
+      } else {
+        // Fallback: submit the form directly
+        const form = page.locator('form').first();
+        if (await form.count() > 0) {
+          await form.evaluate((f) => f.submit());
         }
       }
-    } else {
-      console.warn('Edit button for the item not found. Skipping update.');
-    }
-  },
 
-  async deleteItem(page, itemName) {
-    const row = page.locator(`tr:has-text("${itemName}")`).first();
-    const deleteBtn = row.locator('[data-test="delete-item"]');
-    if ((await deleteBtn.count()) > 0) {
-      await deleteBtn.click();
-      const confirmBtn = page.locator('[data-test="confirm-delete"]');
-      if ((await confirmBtn.count()) > 0) {
-        await confirmBtn.click();
+      // Verify item appears in the list
+      const createdSelector = page.locator(`text=${baseName}`);
+      await createdSelector.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+      if (await createdSelector.count() > 0) {
+        await expect(createdSelector).toBeVisible();
       }
-      // Wait for the row to be removed
-      await row.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+      // Update step (if available)
+      const itemRow = createdSelector.first();
+      const editBtn = itemRow.locator('button', { hasText: 'Edit' }).first();
+      if (await editBtn.count() > 0) {
+        await editBtn.click();
+        const editNameInput = page.locator('input[name="name"]');
+        if (await editNameInput.count() > 0) {
+          const updatedName = baseName + ' Updated';
+          await editNameInput.first().fill(updatedName);
+          const updateBtn = page.locator('button', { hasText: 'Save' }).first();
+          if (await updateBtn.count() > 0) {
+            await updateBtn.click();
+            await expect(page.locator(`text=${updatedName}`)).toBeVisible();
+            createdName = updatedName;
+          }
+        }
+      }
+      // Delete step (best-effort)
+      const delBtn = itemRow.locator('button', { hasText: 'Delete' }).first();
+      if (await delBtn.count() > 0) {
+        await delBtn.click();
+        const confirmBtn = page.locator('button', { hasText: 'Yes' }).or(page.locator('button', { hasText: 'Confirm' }));
+        if (await confirmBtn.count() > 0) {
+          await confirmBtn.first().click();
+        }
+        // Ensure item is removed
+        await expect(page.locator(`text=${createdName}`)).toHaveCount(0);
+      }
     } else {
-      console.warn('Delete button for the item not found. Skipping delete.');
-    }
-  }
-};
-
-test.describe('Comprehensive End-to-End: Generic flows', () => {
-  test.beforeEach(async ({ page }) => {
-    // Common setup for each test
-    await page.setViewportSize({ width: 1280, height: 720 });
-    page.setDefaultTimeout(30000);
-  });
-
-  test('Navigate to potential routes and verify basic access', async ({ page }) => {
-    await Helpers.navigateAndAssertRoutes(page);
-  });
-
-  test('Authentication flow (if available)', async ({ page }) => {
-    await Helpers.loginIfAvailable(page);
-    // Post-login verification (best-effort)
-    const postLoginSelector = page.locator('[data-test="user-avatar"]');
-    if ((await postLoginSelector.count()) > 0) {
-      await postLoginSelector.first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-      // Optionally log out to clean state if supported
-      // const logoutBtn = page.locator('[data-test="logout"]');
-      // if ((await logoutBtn.count()) > 0) { await logoutBtn.click(); }
-    } else {
-      // If no auth flow detected, consider test passed as it's environment-specific
-      // Do not fail the test in absence of auth pages
+      // If no New Item button, still ensure the list loads
+      const listRoot = page.locator('[role="list"], [data-testid="items-list"], table');
+      await listRoot.first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
     }
   });
 
-  test('Create, Read, Update, and Delete (CRUD) for items', async ({ page }) => {
-    // Ensure we are on the items page and login if needed
-    await Helpers.loginIfAvailable(page);
-    // Create
-    await Helpers.createItem(page, TEST_ITEM);
-
-    // Read/Verify creation
-    const created = await Helpers.readItem(page, TEST_ITEM.name);
-    await expect(created).toBeVisible();
-
-    // Update
-    const UPDATED_NAME = TEST_ITEM.name + ' Updated';
-    await Helpers.updateItem(page, TEST_ITEM.name, UPDATED_NAME);
-    const updatedLocator = page.locator(`text="${UPDATED_NAME}"`).first();
-    await updatedLocator.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-
-    // Verify update
-    await expect(updatedLocator).toBeVisible();
-
-    // Delete
-    await Helpers.deleteItem(page, UPDATED_NAME);
-    const afterDelete = page.locator(`text="${UPDATED_NAME}"`);
-    await expect(afterDelete).toHaveCount(0);
+  test('Error handling: 404 and invalid routes', async ({ page }) => {
+    const invalidPath = '/__e2e__invalid__' + Math.floor(Math.random() * 100000);
+    const url = fullURL(invalidPath);
+    const response = await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => null);
+    // Navigate to an invalid route; verify URL is as requested
+    expect(page.url()).toBe(url);
   });
+
+  test('Authentication flow (optional): login/logout when auth is present', async ({ page }) => {
+    // If login form is detected on the current page, run a quick login/logout test
+    const pwdInputs = page.locator('input[type="password"]');
+    if (await pwdInputs.count() > 0) {
+      // Try to login
+      const didLogin = await loginIfPossible(page);
+      // If login occurred, attempt logout if a Logout control exists
+      const logoutBtn = page.locator('button, a', { hasText: 'Logout' });
+      if (await logoutBtn.count() > 0) {
+        await logoutBtn.first().click();
+      } else {
+        // No explicit logout; navigate to base and clear session if possible
+        await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+      }
+      // Optional: ensure we land back on a public page
+      await page.waitForLoadState('networkidle').catch(() => {});
+    }
+  });
+
+  // Teardown hook (optional)
+  test.afterAll(async () => {
+    // Any global cleanup can be handled here
+  });
+
 });

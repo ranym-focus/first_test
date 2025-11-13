@@ -1,90 +1,183 @@
-import React from 'react';
-import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Routes, Route, Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import '@testing-library/jest-dom/extend-expect';
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
 
-describe('Generic frontend integration tests (no detected routes/components)', () => {
-  // Mock minimal components for navigation tests
-  const Home = () => <div data-testid="home-page">Home Page</div>;
-  const About = () => <div data-testid="about-page">About Page</div>;
+// Lightweight components to simulate a generic app structure for integration tests
 
-  function TestNavApp() {
-    return (
-      <MemoryRouter initialEntries={['/home']}>
-        <nav aria-label="Main Navigation">
-          <Link to="/home">Home</Link>
-          <Link to="/about">About</Link>
-        </nav>
-        <Routes>
-          <Route path="/home" element={<Home />} />
-          <Route path="/about" element={<About />} />
-        </Routes>
-      </MemoryRouter>
+const UserCard = ({ user }) => <li data-testid="user-item">{user.name}</li>;
+
+const UsersPage = () => {
+  const [users, setUsers] = useState(null);
+  useEffect(() => {
+    fetch('/api/users')
+      .then((res) => res.json())
+      .then((data) => setUsers(data))
+      .catch(() => setUsers([]));
+  }, []);
+  if (users === null) return <div>Loading Users...</div>;
+  return (
+    <section aria-label="users-page">
+      <h2>Users</h2>
+      <ul>
+        {users.map((u) => (
+          <UserCard key={u.id} user={u} />
+        ))}
+      </ul>
+    </section>
+  );
+};
+
+const SearchBar = ({ onSubmit }) => {
+  const [value, setValue] = useState('');
+  const [error, setError] = useState('');
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!value.trim()) {
+      setError('Please enter a search term');
+      return;
+    }
+    setError('');
+    onSubmit(value);
+  };
+  return (
+    <form onSubmit={handleSubmit}>
+      <input
+        aria-label="search-input"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+      />
+      <button type="submit">Search</button>
+      {error && (
+        <div role="alert" data-testid="search-error">
+          {error}
+        </div>
+      )}
+    </form>
+  );
+};
+
+const Home = ({ onSearch, lastQuery }) => (
+  <main>
+    <h1>Home</h1>
+    <nav>
+      <Link to="/users">Go to Users</Link> | <Link to="/about">About</Link>
+    </nav>
+    <section>
+      <SearchBar onSubmit={onSearch} />
+      {lastQuery ? (
+        <div data-testid="last-query">Last query: {lastQuery}</div>
+      ) : null}
+    </section>
+  </main>
+);
+
+const About = () => (
+  <section>
+    <h2>About</h2>
+  </section>
+);
+
+const App = () => {
+  const [lastQuery, setLastQuery] = useState('');
+  const handleSearch = (q) => {
+    setLastQuery(q);
+  };
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route
+          path="/"
+          element={<Home onSearch={handleSearch} lastQuery={lastQuery} />}
+        />
+        <Route path="/users" element={<UsersPage />} />
+        <Route path="/about" element={<About />} />
+      </Routes>
+    </BrowserRouter>
+  );
+};
+
+// Integration tests (generic routing, components, API, and form interactions)
+
+describe('Generic React app integration tests (generic routes, components, API, forms)', () => {
+  beforeEach(() => {
+    // Reset mocks before each test
+    jest.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('navigates from Home to Users', async () => {
+    render(<App />);
+    // Verify Home is rendered
+    expect(screen.getByText(/Home/i)).toBeInTheDocument();
+
+    // Navigate to Users
+    fireEvent.click(screen.getByText(/Go to Users/i));
+
+    // Wait for Users page to render
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Users/i })).toBeInTheDocument()
     );
-  }
+  });
 
-  test('navigates between Home and About routes', async () => {
-    render(<TestNavApp />);
+  test('fetches and displays users on Users page', async () => {
+    // Mock API response
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: 1, name: 'Alice' },
+        { id: 2, name: 'Bob' },
+      ],
+    });
 
-    // Sanity check: starting at Home
-    expect(screen.getByTestId('home-page')).toBeInTheDocument();
+    render(<App />);
+
+    // Navigate to Users
+    fireEvent.click(screen.getByText(/Go to Users/i));
+
+    // Ensure fetch was called and data is rendered
+    await waitFor(() => expect(screen.getByText(/Alice/i)).toBeInTheDocument());
+    expect(global.fetch).toHaveBeenCalledWith('/api/users');
+  });
+
+  test('form submission updates last query', async () => {
+    render(<App />);
+
+    const input = screen.getByLabelText(/search-input/i);
+    fireEvent.change(input, { target: { value: 'react' } });
+    fireEvent.click(screen.getByText(/Search/i));
+
+    // Check that last query state is reflected in Home
+    await waitFor(() =>
+      expect(screen.getByTestId('last-query')).toHaveTextContent('Last query: react')
+    );
+  });
+
+  test('form validation shows error for empty input', async () => {
+    render(<App />);
+
+    // Submitting with empty input should trigger validation error
+    fireEvent.click(screen.getByText(/Search/i));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('search-error')).toHaveTextContent(
+        'Please enter a search term'
+      )
+    );
+  });
+
+  test('navigation to About page works', async () => {
+    render(<App />);
 
     // Navigate to About
-    const aboutLink = screen.getByText(/About/i);
-    await userEvent.click(aboutLink);
+    fireEvent.click(screen.getByText(/About/i));
 
-    // Verify About page is rendered
-    expect(screen.getByTestId('about-page')).toBeInTheDocument();
-  });
-
-  test('navigates back to Home from About', async () => {
-    render(<TestNavApp />);
-
-    // Move to About
-    await userEvent.click(screen.getByText(/About/i));
-    expect(screen.getByTestId('about-page')).toBeInTheDocument();
-
-    // Navigate back to Home
-    const homeLink = screen.getByText(/Home/i);
-    await userEvent.click(homeLink);
-
-    // Verify Home page is rendered again
-    expect(screen.getByTestId('home-page')).toBeInTheDocument();
-  });
-
-  // Component interaction / data flow tests (parent-child)
-  const Child = ({ onIncrement }) => <button onClick={onIncrement}>Increment</button>;
-
-  const Parent = () => {
-    const [count, setCount] = React.useState(0);
-    return (
-      <div>
-        <div data-testid="count-display">Count: {count}</div>
-        <Child onIncrement={() => setCount((c) => c + 1)} />
-      </div>
+    // Verify About page renders
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /About/i })).toBeInTheDocument()
     );
-  };
-
-  test('data flow from parent to child via callbacks updates state', async () => {
-    render(<Parent />);
-
-    // Initial state
-    expect(screen.getByTestId('count-display')).toHaveTextContent('Count: 0');
-
-    // Child interaction updates parent state
-    const button = screen.getByText('Increment');
-    await userEvent.click(button);
-
-    // Updated state
-    expect(screen.getByTestId('count-display')).toHaveTextContent('Count: 1');
-  });
-
-  // API calls: no API calls detected in this generic scaffold
-  test('no API calls are detected in the generic app (no API layer present)', () => {
-    // Placeholder to reflect absence of API integration in detected app
-    // In a real app, this is where we'd mock and assert API calls.
-    expect(true).toBe(true);
   });
 });
-
-export {};

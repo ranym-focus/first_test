@@ -1,21 +1,273 @@
 {
-  "project_metadata": {
-    "file_types_distribution": {
-      ".py": 3,
-      ".ts": 1,
-      ".tsx": 1,
-      ".js": 1
+  "flake8": {
+    "maxLineLength": 88,
+    "exclude": [
+      "build/",
+      "dist/",
+      ".venv/",
+      "**/__pycache__/**"
+    ],
+    "extendIgnore": [
+      "W503"
+    ],
+    "maxComplexity": 9
+  },
+  "pylint": {
+    "loadPlugins": [
+      "pylint.extensions.mccabe"
+    ],
+    "disable": [
+      "C0114",
+      "C0115",
+      "C0116"
+    ],
+    "maxLineLength": 88,
+    "goodNames": [
+      "i",
+      "j",
+      "k",
+      "id",
+      "cls",
+      "self",
+      "config",
+      "db"
+    ]
+  },
+  "eslint": {
+    "parser": "@typescript-eslint/parser",
+    "parserOptions": {
+      "ecmaVersion": 2020,
+      "sourceType": "module"
     },
-    "dependencies_found": 0,
-    "code_smells_detected": [
-      { "name": "Duplicate Code in init_db.py", "severity": "high" },
-      { "name": "Magic Numbers in init_db.py", "severity": "low" },
-      { "name": "Magic Numbers in e2e.spec.ts", "severity": "low" }
+    "env": {
+      "browser": true,
+      "node": true,
+      "es6": true
+    },
+    "plugins": [
+      "@typescript-eslint",
+      "import",
+      "unused-imports",
+      "prettier"
     ],
-    "complexity_issues_detected": [
-      { "name": "Deep Nesting in init_db.py", "severity": "high" }
+    "extends": [
+      "eslint:recommended",
+      "plugin:@typescript-eslint/recommended",
+      "plugin:prettier/recommended"
     ],
-    "recommended_tools": [
+    "rules": {
+      "no-magic-numbers": [
+        "error",
+        {
+          "ignore": [0, 1, -1, 2],
+          "ignoreArrayIndexes": true
+        }
+      ],
+      "complexity": [
+        "error",
+        {
+          "max": 9
+        }
+      ],
+      "max-len": [
+        "error",
+        {
+          "code": 120
+        }
+      ],
+      "no-duplicate-imports": "error",
+      "max-lines-per-function": [
+        "error",
+        {
+          "max": 60
+        }
+      ],
+      "no-console": "warn"
+    }
+  },
+  "prettier": {
+    "semi": true,
+    "singleQuote": true,
+    "trailingComma": "all",
+    "printWidth": 100,
+    "tabWidth": 2
+  },
+  "black": {
+    "lineLength": 88,
+    "targetVersion": [
+      "py39",
+      "py38",
+      "py37",
+      "py310"
+    ],
+    "skipStringNormalization": false
+  },
+  "mypy": {
+    "strict": true,
+    "ignoreMissingImports": true,
+    "warnUnusedConfigs": true,
+    "disallowUntypedDefs": true,
+    "disallowIncompleteArgs": true,
+    "checkUntypedDefns": true,
+    "noImplicitOptional": true
+  },
+  "tsconfig": {
+    "compilerOptions": {
+      "target": "ES2020",
+      "module": "commonjs",
+      "strict": true,
+      "noImplicitAny": true,
+      "noImplicitThis": true,
+      "alwaysStrict": true,
+      "moduleResolution": "node",
+      "esModuleInterop": true,
+      "skipLibCheck": true,
+      "forceConsistentCasingInFileNames": true
+    },
+    "include": [
+      "src/**/*",
+      "e2e/**/*",
+      "init_db.py"
+    ],
+    "exclude": [
+      "node_modules",
+      "dist"
+    ]
+  },
+  "coverage": {
+    "python": {
+      "enabled": true,
+      "threshold": 80,
+      "strategy": "per-file-coverage",
+      "reporters": [
+        "text",
+        "xml",
+        "html"
+      ]
+    },
+    "typescript": {
+      "enabled": true,
+      "threshold": 80,
+      "strategy": "per-file-coverage",
+      "reporters": [
+        "text",
+        "xml",
+        "html"
+      ]
+    }
+  },
+  "complexity": {
+    "limits": {
+      "cyclomaticComplexity": 9,
+      "nestingDepth": 3
+    }
+  },
+  "codeStyleGuidelines": {
+    "python": {
+      "docstringStyle": "Google",
+      "lineLength": 88,
+      "formattingTool": "Black"
+    },
+    "typescript": {
+      "quoteStyle": "single",
+      "semi": true,
+      "trailingComma": "all"
+    }
+  },
+  "dependencyVulnerabilityScanning": {
+    "pip": {
+      "enabled": true,
+      "failOn": [
+        "CRITICAL",
+        "HIGH"
+      ],
+      "ignorePipfileLock": false
+    },
+    "npm": {
+      "enabled": true,
+      "failOn": [
+        "CRITICAL",
+        "HIGH"
+      ]
+    },
+    "safety": {
+      "enabled": true
+    }
+  },
+  "sonarqube": {
+    "projectKey": "CODE_QUALITY_PROJECT",
+    "projectName": "Code Quality Project",
+    "projectVersion": "1.0.0",
+    "sources": [
+      "init_db.py",
+      "e2e.spec.ts",
+      "src/**",
+      "tests/**"
+    ],
+    "exclusions": [
+      "node_modules/**",
+      "dist/**",
+      "build/**"
+    ],
+    "qualityProfile": {
+      "name": "Custom Quality Profile",
+      "rules": [
+        {
+          "key": "duplicate-code",
+          "severity": "CRITICAL"
+        },
+        {
+          "key": "magic-numbers",
+          "severity": "MINOR"
+        }
+      ]
+    },
+    "duplicationDetection": true
+  },
+  "codeClimate": {
+    "version": 2,
+    "enabled": true,
+    "config": {
+      "exclude_paths": [
+        "node_modules/**",
+        "dist/**",
+        "build/**"
+      ],
+      "thresholds": {
+        "complexity": 9,
+        "coverage": 80
+      },
+      "plugins": [
+        "flake8",
+        "eslint",
+        "black",
+        "mypy"
+      ]
+    }
+  },
+  "smellsAndRules": {
+    "duplicateCode": {
+      "files": [
+        "init_db.py"
+      ],
+      "severity": "high",
+      "description": "Detect and refactor duplicated logic in initialization routines."
+    },
+    "magicNumbers": [
+      {
+        "file": "init_db.py",
+        "severity": "low",
+        "description": "Replace hard-coded numbers with named constants or configuration."
+      },
+      {
+        "file": "e2e.spec.ts",
+        "severity": "low",
+        "description": "Replace magic literals with named constants and explain test parameters."
+      }
+    ]
+  },
+  "tools": {
+    "recommended": [
       "Flake8",
       "SonarQube",
       "ESLint",
@@ -25,164 +277,6 @@
       "CodeClimate",
       "Pylint",
       "TypeScript"
-    ],
-    "technology_stack": {}
-  },
-  "linting": {
-    "python": {
-      "flake8": {
-        "enabled": true,
-        "max_line_length": 88,
-        "exclude": [
-          "*/migrations/*",
-          "venv/*",
-          "build/*",
-          "__pycache__/*"
-        ],
-        "select": [ "E", "F", "W", "C90", "B", "M" ],
-        "max_complexity": 9,
-        "magic_numbers": {
-          "enabled": true,
-          "ignore_numbers": [ 0, 1, 2 ],
-          "min_length": 3
-        }
-      },
-      "pylint": {
-        "enabled": true,
-        "max_nested_blocks": 4
-      },
-      "mypy": {
-        "enabled": true,
-        "strict": true,
-        "ignore_missing_imports": true
-      }
-    },
-    "typescript": {
-      "eslint": {
-        "enabled": true,
-        "parser": "@typescript-eslint/parser",
-        "parserOptions": {
-          "ecmaVersion": 2020,
-          "sourceType": "module"
-        },
-        "extends": [
-          "eslint:recommended",
-          "plugin:@typescript-eslint/recommended",
-          "plugin:prettier/recommended"
-        ],
-        "rules": {
-          "complexity": [ "error", 9 ],
-          "max-depth": [ "error", 4 ],
-          "max-nested-callbacks": [ "error", 3 ],
-          "no-console": [ "warn", { "allow": [ "warn", "error" ] } ]
-        }
-      },
-      "prettier": {
-        "enabled": true,
-        "printWidth": 88,
-        "tabWidth": 2,
-        "semi": true,
-        "singleQuote": true,
-        "trailingComma": "all"
-      }
-    }
-  },
-  "code_coverage": {
-    "python": {
-      "tool": "pytest-cov",
-      "config": {
-        "fail_under": 80,
-        "branch": true,
-        "source": [ "." ]
-      }
-    },
-    "typescript": {
-      "tool": "nyc",
-      "config": {
-        "all": true,
-        "extension": [ ".ts", ".tsx", ".js" ],
-        "reporter": [ "text", "lcov" ],
-        "check-coverage": true,
-        "branches": 80,
-        "functions": 80,
-        "lines": 80,
-        "statements": 80
-      }
-    }
-  },
-  "complexity_limits": {
-    "python": {
-      "flake8": {
-        "max_complexity": 9
-      },
-      "pylint": {
-        "max_nested_blocks": 4
-      }
-    },
-    "typescript": {
-      "eslint": {
-        "rules": {
-          "complexity": [ "error", 9 ],
-          "max-depth": [ "error", 4 ]
-        }
-      }
-    }
-  },
-  "style_guidelines": {
-    "python": {
-      "black": { "line_length": 88 },
-      "isort": { "profile": "black" },
-      "pep8": { "max_line_length": 88 }
-    },
-    "typescript": {
-      "prettier": { "printWidth": 88, "singleQuote": true, "semi": true, "trailingComma": "all" },
-      "eslint": { "extends": [ "plugin:prettier/recommended" ] }
-    }
-  },
-  "dependency_scanning": {
-    "pip_audit": { "enabled": true },
-    "npm_audit": { "enabled": true }
-  },
-  "code_smells_rules": {
-    "duplicate_code": {
-      "tool": "sonarqube",
-      "enabled": true,
-      "threshold": 0.0
-    },
-    "magic_numbers": {
-      "tool": "flake8-magic-numbers",
-      "enabled": true,
-      "ignore_numbers": [ 0, 1, 2 ],
-      "min_length": 3
-    },
-    "deep_nesting": {
-      "tool": "pylint",
-      "enabled": true,
-      "max_nested_blocks": 4
-    }
-  },
-  "sonarqube": {
-    "enabled": true,
-    "server": "https://sonarqube.example.com",
-    "projectKey": "my_project_key",
-    "projectName": "My Project",
-    "exclusions": [
-      "**/__pycache__/**",
-      "**/node_modules/**",
-      "**/dist/**"
-    ],
-    "languages": [ "py", "ts" ]
-  },
-  "codeclimate": {
-    "enabled": true,
-    "config": {
-      "exclude_paths": [
-        "tests/*",
-        "venv/*",
-        "node_modules/*"
-      ],
-      "quality": 0
-    }
-  },
-  "technology_stack": {}
+    ]
+  }
 }
