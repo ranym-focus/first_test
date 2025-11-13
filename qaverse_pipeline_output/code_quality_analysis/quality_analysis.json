@@ -1,0 +1,188 @@
+{
+  "project_metadata": {
+    "file_types_distribution": {
+      ".py": 3,
+      ".ts": 1,
+      ".tsx": 1,
+      ".js": 1
+    },
+    "dependencies_found": 0,
+    "code_smells_detected": [
+      { "name": "Duplicate Code in init_db.py", "severity": "high" },
+      { "name": "Magic Numbers in init_db.py", "severity": "low" },
+      { "name": "Magic Numbers in e2e.spec.ts", "severity": "low" }
+    ],
+    "complexity_issues_detected": [
+      { "name": "Deep Nesting in init_db.py", "severity": "high" }
+    ],
+    "recommended_tools": [
+      "Flake8",
+      "SonarQube",
+      "ESLint",
+      "Prettier",
+      "Black",
+      "mypy",
+      "CodeClimate",
+      "Pylint",
+      "TypeScript"
+    ],
+    "technology_stack": {}
+  },
+  "linting": {
+    "python": {
+      "flake8": {
+        "enabled": true,
+        "max_line_length": 88,
+        "exclude": [
+          "*/migrations/*",
+          "venv/*",
+          "build/*",
+          "__pycache__/*"
+        ],
+        "select": [ "E", "F", "W", "C90", "B", "M" ],
+        "max_complexity": 9,
+        "magic_numbers": {
+          "enabled": true,
+          "ignore_numbers": [ 0, 1, 2 ],
+          "min_length": 3
+        }
+      },
+      "pylint": {
+        "enabled": true,
+        "max_nested_blocks": 4
+      },
+      "mypy": {
+        "enabled": true,
+        "strict": true,
+        "ignore_missing_imports": true
+      }
+    },
+    "typescript": {
+      "eslint": {
+        "enabled": true,
+        "parser": "@typescript-eslint/parser",
+        "parserOptions": {
+          "ecmaVersion": 2020,
+          "sourceType": "module"
+        },
+        "extends": [
+          "eslint:recommended",
+          "plugin:@typescript-eslint/recommended",
+          "plugin:prettier/recommended"
+        ],
+        "rules": {
+          "complexity": [ "error", 9 ],
+          "max-depth": [ "error", 4 ],
+          "max-nested-callbacks": [ "error", 3 ],
+          "no-console": [ "warn", { "allow": [ "warn", "error" ] } ]
+        }
+      },
+      "prettier": {
+        "enabled": true,
+        "printWidth": 88,
+        "tabWidth": 2,
+        "semi": true,
+        "singleQuote": true,
+        "trailingComma": "all"
+      }
+    }
+  },
+  "code_coverage": {
+    "python": {
+      "tool": "pytest-cov",
+      "config": {
+        "fail_under": 80,
+        "branch": true,
+        "source": [ "." ]
+      }
+    },
+    "typescript": {
+      "tool": "nyc",
+      "config": {
+        "all": true,
+        "extension": [ ".ts", ".tsx", ".js" ],
+        "reporter": [ "text", "lcov" ],
+        "check-coverage": true,
+        "branches": 80,
+        "functions": 80,
+        "lines": 80,
+        "statements": 80
+      }
+    }
+  },
+  "complexity_limits": {
+    "python": {
+      "flake8": {
+        "max_complexity": 9
+      },
+      "pylint": {
+        "max_nested_blocks": 4
+      }
+    },
+    "typescript": {
+      "eslint": {
+        "rules": {
+          "complexity": [ "error", 9 ],
+          "max-depth": [ "error", 4 ]
+        }
+      }
+    }
+  },
+  "style_guidelines": {
+    "python": {
+      "black": { "line_length": 88 },
+      "isort": { "profile": "black" },
+      "pep8": { "max_line_length": 88 }
+    },
+    "typescript": {
+      "prettier": { "printWidth": 88, "singleQuote": true, "semi": true, "trailingComma": "all" },
+      "eslint": { "extends": [ "plugin:prettier/recommended" ] }
+    }
+  },
+  "dependency_scanning": {
+    "pip_audit": { "enabled": true },
+    "npm_audit": { "enabled": true }
+  },
+  "code_smells_rules": {
+    "duplicate_code": {
+      "tool": "sonarqube",
+      "enabled": true,
+      "threshold": 0.0
+    },
+    "magic_numbers": {
+      "tool": "flake8-magic-numbers",
+      "enabled": true,
+      "ignore_numbers": [ 0, 1, 2 ],
+      "min_length": 3
+    },
+    "deep_nesting": {
+      "tool": "pylint",
+      "enabled": true,
+      "max_nested_blocks": 4
+    }
+  },
+  "sonarqube": {
+    "enabled": true,
+    "server": "https://sonarqube.example.com",
+    "projectKey": "my_project_key",
+    "projectName": "My Project",
+    "exclusions": [
+      "**/__pycache__/**",
+      "**/node_modules/**",
+      "**/dist/**"
+    ],
+    "languages": [ "py", "ts" ]
+  },
+  "codeclimate": {
+    "enabled": true,
+    "config": {
+      "exclude_paths": [
+        "tests/*",
+        "venv/*",
+        "node_modules/*"
+      ],
+      "quality": 0
+    }
+  },
+  "technology_stack": {}
+}
