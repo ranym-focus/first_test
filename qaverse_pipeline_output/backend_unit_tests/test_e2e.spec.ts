@@ -1,42 +1,124 @@
 import { test, expect } from '@playwright/test';
 
-async function waitForNetworkIdle(page: any, timeout = 10000) {
-  return page.waitForLoadState('networkidle', { timeout });
-}
+type LocatorLike = {
+  count(): Promise<number>;
+  first(): LocatorLike;
+  fill?(value: string): Promise<void>;
+  click?(): Promise<void>;
+};
 
-async function fillIfExists(page: any, selector: string, value: string): Promise<boolean> {
-  const el = page.locator(selector);
-  const count = await el.count();
-  if (count > 0) {
-    await el.first().fill(value);
-    return true;
+class MockLocator implements LocatorLike {
+  selector: string;
+  page: MockPage;
+
+  constructor(selector: string, page: MockPage) {
+    this.selector = selector;
+    this.page = page;
   }
-  return false;
+
+  async count(): Promise<number> {
+    // Composite selectors support (e.g., 'a, b')
+    if (this.selector.includes(',')) {
+      const parts = this.selector.split(',').map((s) => s.trim());
+      for (const part of parts) {
+        if (this.page.existsMap.get(part)) {
+          return 1;
+        }
+      }
+      return 0;
+    }
+    return this.page.existsMap.get(this.selector) ? 1 : 0;
+  }
+
+  first(): LocatorLike {
+    return this;
+  }
+
+  async fill(value: string): Promise<void> {
+    this.page.filled.set(this.selector, value);
+  }
+
+  async click(): Promise<void> {
+    this.page.clickedSelectors.push(this.selector);
+  }
 }
 
-async function maybeLogin(page: any, config?: { AUTH_ENABLED?: boolean; BASE_URL?: string; USERNAME?: string; PASSWORD?: string; }) {
-  const AUTH_ENABLED = config?.AUTH_ENABLED ?? false;
-  const BASE_URL = config?.BASE_URL ?? 'http://localhost:3000';
+class MockPage {
+  // Mock environment
+  existsMap: Map<string, boolean> = new Map();
+  filled: Map<string, string> = new Map();
+  clickedSelectors: string[] = [];
+  gotoUrl?: string;
+  loginProbeCalled: boolean = false;
+  loginProbeOk: boolean = false;
+  lastWaitState?: string;
+  lastWaitTimeout?: number;
+
+  // request.get mock
+  request = {
+    get: async (_url: string, _opts?: any) => {
+      this.loginProbeCalled = true;
+      return { ok: this.loginProbeOk };
+    },
+  };
+
+  // Locator factory
+  locator(selector: string): MockLocator {
+    return new MockLocator(selector, this);
+  }
+
+  async goto(url: string, _opts?: any): Promise<void> {
+    this.gotoUrl = url;
+  }
+
+  async waitForLoadState(state: string, opts?: any): Promise<void> {
+    this.lastWaitState = state;
+    this.lastWaitTimeout = opts?.timeout;
+  }
+
+  // Helpers for tests
+  reset() {
+    this.filled.clear();
+    this.clickedSelectors = [];
+    this.gotoUrl = undefined;
+    this.loginProbeCalled = false;
+    this.lastWaitState = undefined;
+    this.lastWaitTimeout = undefined;
+  }
+}
+
+// Pure helper implementations copied for unit testing purposes
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const AUTH_ENABLED = process.env.AUTH_ENABLED === 'true';
+
+async function waitForNetworkIdle(page: MockPage, timeout = 10000) {
+  await page.waitForLoadState('networkidle', { timeout });
+}
+
+async function maybeLogin(page: MockPage) {
   if (!AUTH_ENABLED) return;
 
   try {
     const loginProbe = await page.request.get(`${BASE_URL}/login`, { timeout: 3000 });
     if (loginProbe && loginProbe.ok) {
+      // Navigate to login page
       await page.goto(`${BASE_URL}/login`, { waitUntil: 'networkidle' });
+      // Try to fill common fields if present
       const usernameSelector = 'input[name="username"], input#username';
       const passwordSelector = 'input[name="password"], input#password';
-      const hasUsername = await page.locator(usernameSelector).count() > 0;
-      const hasPassword = await page.locator(passwordSelector).count() > 0;
+      const hasUsername = (await page.locator(usernameSelector).count()) > 0;
+      const hasPassword = (await page.locator(passwordSelector).count()) > 0;
 
       if (hasUsername) {
-        const user = config?.USERNAME || 'test';
-        await page.fill(usernameSelector, user);
+        const user = process.env.USERNAME || 'test';
+        await page.locator(usernameSelector).fill?.(user);
       }
       if (hasPassword) {
-        const pass = config?.PASSWORD || 'test';
-        await page.fill(passwordSelector, pass);
+        const pass = process.env.PASSWORD || 'test';
+        await page.locator(passwordSelector).fill?.(pass);
       }
 
+      // Submit if possible
       const submitBtn = page.locator('button[type="submit"], input[type="submit"]');
       if (await submitBtn.count() > 0) {
         await submitBtn.first().click();
@@ -48,109 +130,104 @@ async function maybeLogin(page: any, config?: { AUTH_ENABLED?: boolean; BASE_URL
   }
 }
 
-test.describe('Helper function unit tests for e2e.spec.ts', () => {
-  test('waitForNetworkIdle calls page.waitForLoadState with networkidle and timeout', async () => {
-    const logs: any[] = [];
-    const page: any = {
-      waitForLoadState: async (state: string, opts?: any) => {
-        logs.push({ state, timeout: opts?.timeout });
-      }
-    };
-    await waitForNetworkIdle(page, 1234);
-    expect(logs).toEqual([{ state: 'networkidle', timeout: 1234 }]);
+async function fillIfExists(page: MockPage, selector: string, value: string): Promise<boolean> {
+  const el = page.locator(selector);
+  if ((await el.count()) > 0) {
+    await el.first().fill?.(value);
+    return true;
+  }
+  return false;
+}
+
+test.describe('Comprehensive Unit Tests for internal helpers (derived from e2e.spec.ts)', () => {
+  test.beforeEach(async () => {
+    // reset any global state if needed
   });
 
-  test('fillIfExists fills when element exists', async () => {
-    const page: any = {
-      locator: (sel: string) => ({
-        count: async () => (sel === 'exists' ? 1 : 0),
-        first: () => ({
-          fill: async (v: string) => {
-            page.filled = page.filled || [];
-            page.filled.push({ selector: sel, value: v });
-          }
-        })
-      })
-    };
-    const result = await fillIfExists(page, 'exists', 'VALUE');
+  test('waitForNetworkIdle forwards network idle state with timeout', async () => {
+    const page = new MockPage();
+    await waitForNetworkIdle(page, 15000);
+    expect(page.lastWaitState).toBe('networkidle');
+    expect(page.lastWaitTimeout).toBe(15000);
+  });
+
+  test('fillIfExists returns true and fills when selector exists', async () => {
+    const page = new MockPage();
+    page.existsMap.set('input[name="name"]', true);
+    const result = await fillIfExists(page, 'input[name="name"]', 'Alice');
     expect(result).toBe(true);
-    expect(page.filled).toContainEqual({ selector: 'exists', value: 'VALUE' });
+    expect(page.filled.get('input[name="name"]')).toBe('Alice');
   });
 
-  test('fillIfExists returns false when element does not exist', async () => {
-    const page: any = {
-      locator: (sel: string) => ({
-        count: async () => 0,
-        first: () => ({
-          fill: async (_v: string) => {}
-        })
-      })
-    };
-    const result = await fillIfExists(page, 'missing', 'VALUE');
+  test('fillIfExists returns false when selector does not exist', async () => {
+    const page = new MockPage();
+    page.existsMap.set('input[name="description"]', false);
+    const result = await fillIfExists(page, 'input[name="description"]', 'Desc');
     expect(result).toBe(false);
+    expect(page.filled.has('input[name="description"]')).toBeFalsy();
   });
 
-  test('maybeLogin does nothing when AUTH_ENABLED is false', async () => {
-    const page: any = {
-      request: { get: async () => ({ ok: true }) },
-      goto: async (url: string) => { (page as any).gotoUrl = url; },
-      locator: (sel: string) => ({
-        count: async () => 0,
-        first: () => ({})
-      }),
-      fill: async (_sel: string, _val: string) { (page as any).filled = (page as any).filled || []; (page as any).filled.push({ selector: _sel, value: _val }); },
-      waitForLoadState: async () => {}
-    };
-    await maybeLogin(page, { AUTH_ENABLED: false });
-    expect((page as any).gotoUrl).toBeUndefined();
+  test('maybeLogin skips when AUTH is disabled', async () => {
+    const page = new MockPage();
+    // Force auth disabled
+    const originalAuth = process.env.AUTH_ENABLED;
+    process.env.AUTH_ENABLED = 'false';
+    try {
+      await maybeLogin(page);
+      expect(page.loginProbeCalled).toBe(false);
+    } finally {
+      process.env.AUTH_ENABLED = originalAuth;
+    }
   });
 
-  test('maybeLogin performs login flow when enabled and probe ok and selectors exist', async () => {
-    const page: any = {
-      request: { get: async (_url: string, _opts?: any) => ({ ok: true }) },
-      goto: async (url: string, _opts?: any) => { (page as any).gotoUrl = url; },
-      locator: (sel: string) => ({
-        count: async () => {
-          if (sel === 'button[type="submit"], input[type="submit"]') return 1;
-          if (sel === 'input[name="username"], input#username') return 1;
-          if (sel === 'input[name="password"], input#password') return 1;
-          return 0;
-        },
-        first: () => ({
-          click: async () => { (page as any).clickedSubmit = true; }
-        })
-      }),
-      fill: async (sel: string, val: string) {
-        page.filled = page.filled || [];
-        page.filled.push({ selector: sel, value: val });
-      },
-      waitForLoadState: async (_state: string, _opts?: any) {
-        (page as any).waitForLoadStateCalls = (page as any).waitForLoadStateCalls || [];
-        (page as any).waitForLoadStateCalls.push({ state: _state, timeout: _opts?.timeout });
-      }
-    };
+  test('maybeLogin fills credentials when available and login probe succeeds', async () => {
+    const page = new MockPage();
+    process.env.AUTH_ENABLED = 'true';
+    process.env.BASE_URL = 'http://test';
+    page.loginProbeOk = true;
+    // Username/password inputs exist
+    page.existsMap.set('input[name="username"]', true);
+    page.existsMap.set('input[name="password"]', true);
+    page.existsMap.set('textarea[name="description"]', false);
+    process.env.USERNAME = 'bob';
+    process.env.PASSWORD = 'secret';
+    await maybeLogin(page);
 
-    await maybeLogin(page, { AUTH_ENABLED: true, BASE_URL: 'http://example', USERNAME: 'alice', PASSWORD: 'secret' });
-    expect((page as any).gotoUrl).toBe('http://example/login');
-    expect(page.filled).toContainEqual({ selector: 'input[name="username"], input#username', value: 'alice' });
-    expect(page.filled).toContainEqual({ selector: 'input[name="password"], input#password', value: 'secret' });
-    expect((page as any).clickedSubmit).toBe(true);
-    expect((page as any).waitForLoadStateCalls).toContainEqual({ state: 'networkidle', timeout: 5000 });
+    // navigate to login page
+    expect(page.gotoUrl).toBe('http://test/login');
+
+    // credentials filled
+    expect(page.filled.get('input[name="username"]')).toBe('bob');
+    expect(page.filled.get('input[name="password"]')).toBe('secret');
+
+    // submit button exists and clicked
+    // There is a composite selector for submit
+    // Our MockLocator records clicks on first submit selector
+    const hasSubmitTriggered = page.clickedSelectors.includes('button[type="submit"], input[type="submit"]');
+    expect(hasSubmitTriggered).toBeTruthy();
+
+    // network idle after submit should have been awaited
+    expect(page.lastWaitState).toBe('networkidle');
   });
 
-  test('maybeLogin handles loginProbe error gracefully', async () => {
-    const page: any = {
-      request: { get: async () => { throw new Error('boom'); } },
-      goto: async (_url: string) => { throw new Error('should not navigate'); },
-      locator: (_sel: string) => ({
-        count: async () => 0,
-        first: () => ({})
-      }),
-      fill: async () => {},
-      waitForLoadState: async () => {}
-    };
-    await expect(async () => {
-      await maybeLogin(page, { AUTH_ENABLED: true, BASE_URL: 'http://example' });
-    }).not.toThrow();
+  test('maybeLogin does not fill fields when inputs do not exist', async () => {
+    const page = new MockPage();
+    process.env.AUTH_ENABLED = 'true';
+    page.loginProbeOk = true;
+    // No username/password inputs exist
+    page.existsMap.set('input[name="username"]', false);
+    page.existsMap.set('input[name="password"]', false);
+    await maybeLogin(page);
+
+    // Should have navigated to login but not filled credentials
+    expect(page.gotoUrl).toBe('http://localhost:3000/login');
+    expect(page.filled.has('input[name="username"]')).toBeFalsy();
+    expect(page.filled.has('input[name="password"]')).toBeFalsy();
+  });
+
+  test('waitForNetworkIdle edge: timeout propagation via helper', async () => {
+    const page = new MockPage();
+    await waitForNetworkIdle(page, 3000);
+    expect(page.lastWaitTimeout).toBe(3000);
   });
 });

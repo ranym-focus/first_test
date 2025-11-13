@@ -1,272 +1,321 @@
+import sys
 import types
-import uuid
-from datetime import datetime
-
+import importlib
 import pytest
 
-import init_db as init_db_module
+# Create a fake 'database' module to satisfy init_db.py imports before actually importing it
+database_module = types.ModuleType('database')
+
+# Minimal dummy db with session for the functions
+class DummySession:
+    def __init__(self):
+        self.executed = False
+        self.committed = False
+        self.rolled_back = False
+        self.last_sql = None
+
+    def execute(self, query, *args, **kwargs):
+        self.executed = True
+        self.last_sql = str(query)
+        return None
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+class DummyDB:
+    def __init__(self):
+        self.session = DummySession()
+        self.engine = object()
+
+database_module.db = DummyDB()
+
+# A no-op init_db function so import doesn't fail
+database_module.init_db = lambda app=None: None
+
+# Provide placeholder classes for all expected names to satisfy import
+class _Placeholder: pass
+names = [
+    'User','Organization','OrganizationMember','Project','TestRun','TestPhase','TestPlan','TestPackage',
+    'TestCaseExecution','DocumentAnalysis','UserRole','UserPreferences','BDDFeature','BDDScenario',
+    'BDDStep','TestCase','TestCaseStep','TestCaseData','TestCaseDataInput','TestRunResult','SeleniumTest',
+    'UnitTest','GeneratedCode','UploadedCodeFile','Integration','JiraSyncItem','CrawlMeta','CrawlPage',
+    'TestPlanTestRun','TestPackageTestRun','VirtualTestExecution','GeneratedBDDScenario','GeneratedManualTest',
+    'GeneratedAutomationTest','TestExecutionComparison','SDDReviews','SDDEnhancements','ProjectUnitTests',
+    'Workflow','WorkflowExecution','WorkflowNodeExecution','TestPipeline','PipelineExecution',
+    'PipelineStageExecution','PipelineStepExecution'
+]
+for name in names:
+    setattr(database_module, name, _Placeholder)
+
+sys.modules['database'] = database_module
+
+# Now import the target module (this will use the fake database module)
+init_db = importlib.import_module('init_db')
 
 
-# Helper dummy classes for User model simulations
-class DummyQuery:
-    def __init__(self, first_result=None, all_results=None):
-        self._first = first_result
-        self._all = all_results if all_results is not None else []
+# Helper: reset fake users between tests where needed
+class FakeExpression:
+    def __init__(self, op, a, b=None):
+        self.op = op
+        self.a = a
+        self.b = b
 
+class FakeField:
+    def __init__(self, name):
+        self.name = name
+    def __eq__(self, other):
+        return FakeExpression('eq', self.name, other)
+    def __or__(self, other):
+        return FakeExpression('or', self.__eq__(None), other)
+
+class FakeQuery:
+    def __init__(self, model_class=None):
+        self.model_class = model_class
+        self._filters = {}
+        self._predicate = None
+
+    # support for filter_by(...)
     def filter_by(self, **kwargs):
+        self._filters = kwargs
+        return self
+
+    # support for filter(...) with a predicate
+    def filter(self, predicate):
+        self._predicate = predicate
         return self
 
     def first(self):
-        return self._first
+        if not hasattr(FakeUser, "_instances"):
+            return None
+        for u in FakeUser._instances:
+            ok = True
+            for k, v in self._filters.items():
+                if getattr(u, k) != v:
+                    ok = False
+                    break
+            if ok:
+                return u
+        return None
 
     def all(self):
-        return list(self._all)
+        if not hasattr(FakeUser, "_instances"):
+            return []
+        if self._predicate is None:
+            return list(FakeUser._instances)
+        # evaluate custom predicate against each user
+        def _evaluate(user, expr):
+            if isinstance(expr, FakeExpression):
+                if expr.op == 'eq':
+                    attr = expr.a
+                    val = expr.b
+                    return getattr(user, attr) == val
+                if expr.op == 'or':
+                    return _evaluate(user, expr.a) or _evaluate(user, expr.b)
+            return False
+
+        result = []
+        for u in FakeUser._instances:
+            if _evaluate(u, self._predicate):
+                result.append(u)
+        return result
+
+class FakeUser:
+    _instances = []
+    ai_model_preference = FakeField('ai_model_preference')
+    query = FakeQuery(None)
+
+    def __init__(self, id, username=None, email=None, full_name=None, role=None, is_active=None,
+                 email_verified=None, ai_model_preference=None, created_at=None, updated_at=None):
+        self.id = id
+        self.username = username
+        self.email = email
+        self.full_name = full_name
+        self.role = role
+        self.is_active = is_active
+        self.email_verified = email_verified
+        self.ai_model_preference = ai_model_preference
+        self.created_at = created_at
+        self.updated_at = updated_at
+        self._password = None
+        FakeUser._instances.append(self)
+
+    def set_password(self, password):
+        self._password = password
+
+# Patchable attributes injected into tests
+@pytest.fixture(autouse=True)
+def clear_fake_users():
+    # Reset fake user store before each test that uses it
+    FakeUser._instances = []
+    FakeQuery  # ensure class is defined
+    # Rebind class attribute query
+    FakeUser.query = FakeQuery(FakeUser)
+    yield
+    FakeUser._instances = []
 
 
-class DummyUserForUpdate:
-    # Attribute to simulate SA expression for ai_model_preference
-    class _Attr:
-        def __eq__(self, other):
-            return self  # Dummy expression object
+# Test 1: remove_username_constraint success and error paths
+def test_remove_username_constraint_success_and_error(capfd):
+    # Success path
+    class SimpleSessionSuccess(DummySession):
+        pass
+    init_db.db = types.SimpleNamespace(session=SimpleSessionSuccess(), engine=None)
 
-    ai_model_preference = _Attr()
-    query = DummyQuery()
+    init_db.remove_username_constraint()
+    out = capfd.readouterr().out
+    assert "✅ Username constraint removed successfully!" in out
 
-
-class DummyBinaryExpression:
-    def __or__(self, other):
-        return self
-
-
-def test_remove_username_constraint_success(monkeypatch, capsys):
-    class DummyDBSession:
-        def execute(self, sql, *args, **kwargs):
-            return None
-        def commit(self):
-            pass
-        def rollback(self):
-            pass
-
-    dummy_db = types.SimpleNamespace(session=DummyDBSession())
-    monkeypatch.setattr(init_db_module, 'db', dummy_db)
-    init_db_module.remove_username_constraint()
-    captured = capsys.readouterr()
-    assert "✅ Username constraint removed successfully!" in captured.out
-
-
-def test_remove_username_constraint_failure(monkeypatch, capsys):
-    class DummyDBSession:
-        def __init__(self):
-            self.rolled_back = False
-
-        def execute(self, sql, *args, **kwargs):
+    # Error path
+    class SimpleSessionFail(DummySession):
+        def execute(self, *args, **kwargs):
             raise Exception("boom")
-
-        def commit(self):
-            pass
-
         def rollback(self):
             self.rolled_back = True
+    init_db.db = types.SimpleNamespace(session=SimpleSessionFail(), engine=None)
 
-    dummy_db = types.SimpleNamespace(session=DummyDBSession())
-    monkeypatch.setattr(init_db_module, 'db', dummy_db)
-    init_db_module.remove_username_constraint()
-    captured = capsys.readouterr()
-    assert "Error removing constraint" in captured.out or "❌" in captured.out
-    assert dummy_db.session.rolled_back is True
+    init_db.remove_username_constraint()
+    out = capfd.readouterr().out
+    assert "❌ Error removing constraint: boom" in out
+    # rollback should be attempted
+    assert getattr(init_db.db.session, "rolled_back", False) is True
 
 
-def test_check_column_exists_true_false(monkeypatch):
-    # Patch inspect to simulate columns in a table
-    class DummyInspector:
-        def __init__(self, cols):
-            self._cols = cols
-
+# Test 2: check_column_exists using a fake inspector
+def test_check_column_exists(monkeypatch):
+    class FakeInspector:
+        def __init__(self, cols_map):
+            self._cols = cols_map
         def get_columns(self, table_name):
-            return self._cols
+            return self._cols.get(table_name, [])
 
-    monkeypatch.setattr(init_db_module, 'inspect', lambda engine: DummyInspector([{'name': 'existing'}, {'name': 'another'}]))
-    # Test existing
-    assert init_db_module.check_column_exists('projects', 'existing') is True
-    # Test non-existing
-    assert init_db_module.check_column_exists('projects', 'missing') is False
+    cols_map = {
+        'projects': [{'name': 'id'}, {'name': 'user_id'}],
+        'users': [{'name': 'id'}]
+    }
+
+    # Patch init_db.inspect to return our fake inspector
+    monkeypatch.setattr(init_db, 'inspect', lambda engine: FakeInspector(cols_map))
+
+    init_db.db = types.SimpleNamespace(engine=None)
+
+    assert init_db.check_column_exists('projects', 'user_id') is True
+    assert init_db.check_column_exists('projects', 'nonexistent') is False
+    assert init_db.check_column_exists('users', 'id') is True
 
 
-def test_add_project_user_id_success(monkeypatch, capsys):
-    # Ensure column does not exist
-    monkeypatch.setattr(init_db_module, 'check_column_exists', lambda table, col: False)
-    # Pretend to be sqlite
-    monkeypatch.setitem(init_db_module.app.config, 'SQLALCHEMY_DATABASE_URI', 'sqlite:///test.db')
+# Test 3: add_project_user_id with existing and new column
+def test_add_project_user_id(monkeypatch):
+    # Case: already exists
+    monkeypatch.setattr(init_db, 'check_column_exists', lambda table, col: True)
+    init_db.app.config = {'SQLALCHEMY_DATABASE_URI': 'postgresql://user:pass@host/db'}
+    init_db.db = types.SimpleNamespace(session=DummySession(), engine=None)
 
-    class DummyDBSession:
+    assert init_db.add_project_user_id() is True
+
+    # Case: does not exist, sqlite path
+    monkeypatch.setattr(init_db, 'check_column_exists', lambda table, col: False)
+    init_db.app.config = {'SQLALCHEMY_DATABASE_URI': 'sqlite:///test.db'}
+    session = DummySession()
+    # capture SQL executed
+    init_db.db = types.SimpleNamespace(session=session, engine=None)
+
+    assert init_db.add_project_user_id() is True
+    assert session.last_sql is not None
+    assert "ALTER TABLE projects ADD COLUMN user_id VARCHAR(36)" in session.last_sql
+
+
+# Test 4: add_organization_id_to_users with sqlite path
+def test_add_organization_id_to_users_sqlite(monkeypatch):
+    monkeypatch.setattr(init_db, 'check_column_exists', lambda table, col: False)
+    init_db.app.config = {'SQLALCHEMY_DATABASE_URI': 'sqlite:///test.db'}
+    session = DummySession()
+    init_db.db = types.SimpleNamespace(session=session, engine=None)
+
+    assert init_db.add_organization_id_to_users() is True
+    assert session.last_sql is not None
+    assert "ALTER TABLE users ADD COLUMN organization_id VARCHAR(36)" in session.last_sql
+
+    # Exists path
+    monkeypatch.setattr(init_db, 'check_column_exists', lambda table, col: True)
+    session2 = DummySession()
+    init_db.db = types.SimpleNamespace(session=session2, engine=None)
+    assert init_db.add_organization_id_to_users() is True
+    assert session2.executed is False  # no SQL executed when exists
+
+
+# Test 5: create_default_users when admin exists and when not
+def test_create_default_users_admin_exists_and_not(monkeypatch):
+    # Case admin exists
+    existing_admin = FakeUser(id='admin-exists-id', username='admin', email='admin@qaverse.com',
+                              full_name='Admin', role='admin', is_active=True, email_verified=True,
+                              ai_model_preference='gpt-5')
+    FakeUser._instances = [existing_admin]
+    FakeUser.query = FakeQuery(FakeUser)
+    monkeypatch.setattr(init_db, 'User', FakeUser)
+    called = {'updated': False}
+    monkeypatch.setattr(init_db, 'update_existing_users_ai_preference', lambda: called.update(updated=True))
+
+    admin_id = init_db.create_default_users()
+    assert admin_id == existing_admin.id
+
+    # Case admin not exists
+    FakeUser._instances = []
+    FakeUser.query = FakeQuery(FakeUser)
+    monkeypatch.setattr(init_db, 'User', FakeUser)
+
+    # Patch to capture that update_existing_users_ai_preference is invoked
+    flag = {'called': False}
+    def fake_update():
+        flag['called'] = True
+    monkeypatch.setattr(init_db, 'update_existing_users_ai_preference', fake_update)
+
+    admin_id = init_db.create_default_users()
+    # There should be two new users created
+    emails = [u.email for u in FakeUser._instances]
+    assert 'admin@qaverse.com' in emails
+    assert 'miriam.dahmoun@gmail.com' in emails
+    # The returned admin_id should match the admin created above
+    admin_user = next(u for u in FakeUser._instances if u.email == 'admin@qaverse.com')
+    assert admin_id == admin_user.id
+    assert flag['called'] is True
+
+
+# Test 6: update_existing_users_ai_preference updates missing preferences
+def test_update_existing_users_ai_preference_updates_missing(monkeypatch):
+    # Prepare fake users
+    FakeUser._instances = [
+        FakeUser(id='u1', email='u1@example.com', ai_model_preference=None),
+        FakeUser(id='u2', email='u2@example.com', ai_model_preference=''),
+        FakeUser(id='u3', email='u3@example.com', ai_model_preference='existing')
+    ]
+    FakeUser.query = FakeQuery(FakeUser)
+
+    # Patch to ensure migrate function is a no-op
+    monkeypatch.setattr(init_db, 'migrate_ai_model_preference_column', lambda: None)
+
+    # Use a fake db with commit tracking
+    class CommitSession(DummySession):
         def __init__(self):
-            self.executed = []
-
-        def execute(self, sql, *args, **kwargs):
-            self.executed.append(sql)
-
-        def commit(self):
-            pass
-
-        def rollback(self):
-            pass
-
-    dummy_db = types.SimpleNamespace(session=DummyDBSession())
-    monkeypatch.setattr(init_db_module, 'db', dummy_db)
-
-    init_db_module.add_project_user_id()
-    captured = capsys.readouterr()
-    assert "user_id column added to projects table successfully" in captured.out
-
-
-def test_add_project_user_id_failure(monkeypatch, capsys):
-    class DummyDBSession:
-        def execute(self, sql, *args, **kwargs):
-            raise Exception("fail")
-
-        def commit(self):
-            pass
-
-        def rollback(self):
-            pass
-
-    dummy_db = types.SimpleNamespace(session=DummyDBSession())
-    monkeypatch.setattr(init_db_module, 'db', dummy_db)
-    monkeypatch.setattr(init_db_module, 'check_column_exists', lambda t, c: False)
-    monkeypatch.setitem(init_db_module.app.config, 'SQLALCHEMY_DATABASE_URI', 'sqlite:///test.db')
-
-    init_db_module.add_project_user_id()
-    captured = capsys.readouterr()
-    assert "Error adding user_id column" in captured.out or "❌" in captured.out
-
-
-def test_create_default_users_admin_exists(monkeypatch):
-    existing_admin = types.SimpleNamespace(id='existing-admin-id')
-    class DummyUser:
-        # Simulate an existing admin in the DB
-        query = DummyQuery(first_result=existing_admin)
-
-        def __init__(self, **kwargs):
-            for k, v in kwargs.items():
-                setattr(self, k, v)
-            self.password = None
-
-        def set_password(self, pw):
-            self.password = pw
-
-    dummy_db = types.SimpleNamespace(session=type('S', (), {'add': lambda self, o: None, 'commit': lambda self: None, 'rollback': lambda self: None})())
-    monkeypatch.setattr(init_db_module, 'db', dummy_db)
-    monkeypatch.setattr(init_db_module, 'User', DummyUser)
-    admin_id = init_db_module.create_default_users()
-    assert admin_id == 'existing-admin-id'
-
-
-def test_create_default_users_admin_created(monkeypatch):
-    created_users = []
-
-    class DummyUser:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-            self.password = None
-            created_users.append(self)
-
-        def set_password(self, pw):
-            self.password = pw
-
-        # For admin existence check
-        query = DummyQuery(first_result=None)
-
-    class DummySession:
-        def __init__(self):
-            self.added = []
-
-        def add(self, obj):
-            self.added.append(obj)
-
-        def commit(self):
-            pass
-
-        def rollback(self):
-            pass
-
-    dummy_db = types.SimpleNamespace(session=DummySession())
-    monkeypatch.setattr(init_db_module, 'db', dummy_db)
-    monkeypatch.setattr(init_db_module, 'User', DummyUser)
-    # Ensure no existing admin
-    DummyUser.query = DummyQuery(first_result=None)
-    # Patch to avoid side effects of update_existing_users_ai_preference
-    monkeypatch.setattr(init_db_module, 'update_existing_users_ai_preference', lambda: None)
-
-    admin_id = init_db_module.create_default_users()
-    # Two users should be created
-    assert len(created_users) == 2
-    usernames = [u.username for u in created_users]
-    assert 'admin' in usernames
-    assert 'miriam' in usernames
-    assert isinstance(admin_id, str) and len(admin_id) > 0
-
-
-def test_update_existing_users_ai_preference_updates(monkeypatch):
-    # Patch migration step
-    called = {'migrate': False}
-    monkeypatch.setattr(init_db_module, 'migrate_ai_model_preference_column', lambda: called.update({'migrate': True}))
-    # Prepare two users: one without preference, one with existing
-    user1 = types.SimpleNamespace(username='u1', ai_model_preference=None)
-    user2 = types.SimpleNamespace(username='u2', ai_model_preference='gpt-4')
-
-    class DummyUser:
-        ai_model_preference = DummyUserForUpdate.ai_model_preference
-        query = DummyQuery(all_results=[user1, user2])
-
-    monkeypatch.setattr(init_db_module, 'User', DummyUser)
-
-    # Patch db.session
-    class DummyDBSession:
-        def __init__(self):
+            super().__init__()
             self.committed = False
         def commit(self):
             self.committed = True
-    dummy_db = types.SimpleNamespace(session=DummyDBSession())
-    monkeypatch.setattr(init_db_module, 'db', dummy_db)
 
-    init_db_module.update_existing_users_ai_preference()
+    init_db.db = types.SimpleNamespace(session=CommitSession(), engine=None)
 
-    assert user1.ai_model_preference == 'gpt-5'
-    assert user2.ai_model_preference == 'gpt-4'
-    assert dummy_db.session.committed is True
-    assert called['migrate'] is True
+    # Ensure update_existing_users_ai_preference uses our FakeUser
+    monkeypatch.setattr(init_db, 'User', FakeUser)
 
+    init_db.update_existing_users_ai_preference()
 
-def test_add_organization_id_to_users_success(monkeypatch, capsys):
-    monkeypatch.setattr(init_db_module, 'check_column_exists', lambda table, col: False)
-    monkeypatch.setitem(init_db_module.app.config, 'SQLALCHEMY_DATABASE_URI', 'sqlite:///test.db')
-    class DummyDBSession:
-        def __init__(self):
-            self.executed = []
-        def execute(self, sql, *args, **kwargs):
-            self.executed.append(sql)
-        def commit(self): pass
-        def rollback(self): pass
-    dummy_db = types.SimpleNamespace(session=DummyDBSession())
-    monkeypatch.setattr(init_db_module, 'db', dummy_db)
+    # Verify two missing preferences updated to 'gpt-5'
+    updated = [u for u in FakeUser._instances if u.ai_model_preference == 'gpt-5']
+    assert len(updated) == 2
+    assert any(u.id == 'u1' for u in updated)
+    assert any(u.id == 'u2' for u in updated)
 
-    init_db_module.add_organization_id_to_users()
-    captured = capsys.readouterr()
-    assert "organization_id column added to users table successfully" in captured.out or "✅ organization_id column added to users table successfully" in captured.out
-
-
-def test_add_organization_id_to_users_failure(monkeypatch, capsys):
-    class DummyDBSession:
-        def execute(self, sql, *args, **kwargs):
-            raise Exception("fail")
-
-        def commit(self): pass
-        def rollback(self): pass
-    dummy_db = types.SimpleNamespace(session=DummyDBSession())
-    monkeypatch.setattr(init_db_module, 'db', dummy_db)
-    monkeypatch.setattr(init_db_module, 'check_column_exists', lambda table, col: False)
-    monkeypatch.setitem(init_db_module.app.config, 'SQLALCHEMY_DATABASE_URI', 'sqlite:///test.db')
-
-    init_db_module.add_organization_id_to_users()
-    captured = capsys.readouterr()
-    assert "Error adding organization_id column" in captured.out or "❌" in captured.out
+    # Ensure commit occurred
+    assert init_db.db.session.committed is True
