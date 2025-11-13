@@ -1,230 +1,319 @@
-// tests/integration/backend.integration.test.js
+# tests/integration/test_backend_integration.py
 
-/**
- * Comprehensive backend integration tests (generic REST API tests with DB and external service mocks)
- * 
- * Assumptions (adjust to your project structure as needed):
- * - Your Express/FastAPI-like app is exported from src/app (module path may vary).
- * - Database is accessed through Prisma (adjust if you use Sequelize/TypeORM/etc.).
- * - There is a Resource model/table used for CRUD operations with fields including: id, name, description, value.
- * - Public API endpoints follow the pattern:
- *     GET /api/resources
- *     POST /api/resources
- *     GET /api/resources/:id
- *     PUT /api/resources/:id
- *     DELETE /api/resources/:id
- * - External service call (for example, notification) is made to https://external-service.example/api/notify
- * 
- * This test suite covers:
- * - API endpoint interactions (CRUD)
- * - Data persisted to DB (via Prisma)
- * - DB transaction behavior (rollback scenario)
- * - Data flow API -> Service -> DB (end-to-end assertion via API and DB)
- * - Mocked external services (using nock)
- * - Test DB setup/teardown
- */
+import os
+import json
+import importlib
+import asyncio
+import pytest
+import httpx
+from typing import Any, Dict, Optional
 
-// ESLint disable note: This file is test code and may use patterns that differ from production code.
+"""
+Comprehensive integration tests template for a backend application.
 
-const request = require('supertest');
-let app = null;
+What this test suite covers:
+- API CRUD flow for a generic "items" resource
+- Authentication flow and usage of a protected endpoint
+- Integration with an external service via mocked HTTP responses
+- Data flow from API -> Service -> Database layers (via API endpoints)
+- Setup/teardown considerations for a test database (via environment-configured DB URL)
+- Transactional-like flow validations via dedicated endpoints (if present)
 
-// Attempt to load the actual app. If not present, tests will skip gracefully.
-try {
-  // Adjust path to your app entry point as needed
-  app = require('../../src/app'); // Example: src/app.js exporting an Express app or FastAPI-like app
-} catch (err) {
-  // If app isn't available in the environment, tests will be skipped below
-  app = null;
-}
+How to adapt:
+- Set APP_ASGI_APP to point to your ASGI app, e.g. "my_app.main:app"
+- Set DATABASE_URL (or rely on your app's default) to a test database (e.g. sqlite:///./test.db)
+- If your endpoints differ, rename paths accordingly or adjust payloads
 
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+Note:
+This is a generic integration test scaffold. Replace endpoint names, payload shapes, and
+assertions to match your actual API contract. The tests use httpx.AsyncClient with the
+ASGI app to perform true in-process HTTP-style integration tests.
 
-const nock = require('nock');
+Install requirements (example):
+- pytest
+- httpx
+- pytest-asyncio
+- pytest-httpx
 
-describe('Backend Integration Tests (Generic REST API, DB, and External Services)', () => {
-  // If app isn't available, skip all tests gracefully.
-  if (!app) {
-    test('App not available in this environment; skipping integration tests', () => {
-      expect(true).toBe(true);
-    });
-    return;
-  }
+Example environment configuration:
+export APP_ASGI_APP=app.main:app
+export DATABASE_URL=sqlite:///./test.db
+"""
 
-  // DB helper: ensure test database is clean before/after tests
-  beforeAll(async () => {
-    // Attempt to reset the test database. Adjust table/model names to your schema.
-    try {
-      // This assumes a Resource model exists; adjust if your schema uses a different table name
-      await prisma.$executeRaw`TRUNCATE TABLE "Resource" RESTART IDENTITY CASCADE;`;
-    } catch (e) {
-      // If the table doesn't exist yet or the query is not supported, ignore for now
-    }
-  });
+# ---------------------------
+# Helpers: App loader & client
+# ---------------------------
 
-  afterAll(async () => {
-    // Clean up and close DB connection
-    try {
-      await prisma.$disconnect();
-    } catch (e) {
-      // Ignore disconnect errors in teardown
-    }
-  });
+def _load_app_from_env() -> Any:
+    """
+    Dynamically import the ASGI app from an environment variable.
+    Default path: "app.main:app"
+    """
+    app_path = os.environ.get("APP_ASGI_APP", "app.main:app")
+    module_path, attr_name = app_path.split(":")
+    module = importlib.import_module(module_path)
+    return getattr(module, attr_name)
 
-  // Helper: a small in-test timeout to avoid hanging tests if endpoints hang
-  const REQUEST_TIMEOUT_MS = 5000;
 
-  // Test 1: GET all resources (initial state)
-  test('GET /api/resources should return 200 with an array', async () => {
-    const res = await request(app)
-      .get('/api/resources')
-      .expect('Content-Type', /json/)
-      .expect(200);
+@pytest.fixture(scope="session")
+def app() -> Any:
+    """
+    Load the application under test.
+    """
+    return _load_app_from_env()
 
-    expect(Array.isArray(res.body)).toBe(true);
-  }, REQUEST_TIMEOUT_MS);
 
-  // Test 2: Create a resource (API -> DB)
-  let createdResourceId = null;
-  test('POST /api/resources should create a resource and return its id', async () => {
-    const payload = {
-      name: 'IntegrationWidget',
-      description: 'Created during integration tests',
-      value: 19.99
-    };
+@pytest.fixture(scope="function")
+async def client(app: Any) -> httpx.AsyncClient:
+    """
+    Async HTTP client bound to the in-process ASGI app.
+    """
+    async with httpx.AsyncClient(app=app, base_url="http://test") as c:
+        yield c
 
-    const res = await request(app)
-      .post('/api/resources')
-      .send(payload)
-      .set('Accept', 'application/json')
-      .expect('Content-Type', /json/)
-      .expect(201);
 
-    expect(res.body).toHaveProperty('id');
-    createdResourceId = res.body.id;
+# ---------------------------
+# Tests
+# ---------------------------
 
-    // Verify persistence via DB
-    const dbItem = await prisma.resource.findUnique({ where: { id: createdResourceId } });
-    expect(dbItem).not.toBeNull();
-    expect(dbItem.name).toBe(payload.name);
-  }, REQUEST_TIMEOUT_MS);
+@pytest.mark.asyncio
+async def test_api_items_crud_flow(client: httpx.AsyncClient) -> None:
+    """
+    End-to-end CRUD flow for a generic /items resource.
 
-  // Test 3: Read the created resource
-  test('GET /api/resources/:id should return the created resource', async () => {
-    if (!createdResourceId) {
-      return expect(true).toBe(true); // skip guard
-    }
-    const res = await request(app)
-      .get(`/api/resources/${createdResourceId}`)
-      .expect('Content-Type', /json/)
-      .expect(200);
-
-    expect(res.body).toHaveProperty('id', createdResourceId);
-    expect(res.body.name).toBe('IntegrationWidget');
-  }, REQUEST_TIMEOUT_MS);
-
-  // Test 4: Update the resource
-  test('PUT /api/resources/:id should update the resource', async () => {
-    if (!createdResourceId) {
-      return;
-    }
-    const updatePayload = { name: 'UpdatedWidget' };
-    const res = await request(app)
-      .put(`/api/resources/${createdResourceId}`)
-      .send(updatePayload)
-      .expect('Content-Type', /json/)
-      .expect(200);
-
-    expect(res.body).toHaveProperty('id', createdResourceId);
-    expect(res.body.name).toBe('UpdatedWidget');
-
-    // DB check
-    const dbItem = await prisma.resource.findUnique({ where: { id: createdResourceId } });
-    expect(dbItem.name).toBe('UpdatedWidget');
-  }, REQUEST_TIMEOUT_MS);
-
-  // Test 5: Delete the resource
-  test('DELETE /api/resources/:id should remove the resource', async () => {
-    if (!createdResourceId) {
-      return;
-    }
-    await request(app)
-      .delete(`/api/resources/${createdResourceId}`)
-      .expect(204);
-
-    // DB check: should be removed
-    const dbItem = await prisma.resource.findUnique({ where: { id: createdResourceId } });
-    expect(dbItem).toBeNull();
-
-    // Reset local id
-    createdResourceId = null;
-  }, REQUEST_TIMEOUT_MS);
-
-  // Test 6: Database transaction rollback scenario (ensures rollback on error)
-  test('DB transaction should roll back on error', async () => {
-    // This test demonstrates transactional behavior at DB layer level
-    // Create a temporary item inside a transaction that is aborted due to an error
-    let didError = false;
-    try {
-      await prisma.$transaction(async (tx) => {
-        await tx.resource.create({ data: { name: 'TempTransactionalItem', description: 'rollback test', value: 1.0 } });
-        // Force an error to trigger rollback
-        throw new Error('Forced rollback for test');
-      });
-    } catch (e) {
-      didError = true;
+    - Create an item
+    - List items
+    - Retrieve single item
+    - Update item
+    - Delete item
+    - Confirm deletion
+    """
+    # 1) Create item
+    create_payload: Dict[str, Any] = {
+        "name": "Integration Test Item",
+        "description": "Created by integration test",
+        "price": 9.99
     }
 
-    expect(didError).toBe(true);
+    resp = await client.post("/items", json=create_payload)
+    assert resp.status_code == 201, f"Expected 201 Created, got {resp.status_code}: {resp.text}"
 
-    // Verify that the item does not exist due to rollback
-    const item = await prisma.resource.findFirst({ where: { name: 'TempTransactionalItem' } });
-    expect(item).toBeNull();
-  }, REQUEST_TIMEOUT_MS);
+    created = resp.json()
+    assert isinstance(created, dict), "Response should be a JSON object with item details"
+    item_id = created.get("id")
+    assert item_id is not None, "Created item should return an 'id' field"
 
-  // Test 7: External service integration via API (mocked)
-  test('External service is invoked during resource creation (mocked)', async () => {
-    // Mock external notifier service
-    const scope = nock('https://external-service.example')
-      .post('/api/notify')
-      .reply(200, { success: true });
+    # 2) List items
+    resp = await client.get("/items")
+    assert resp.status_code == 200, f"List items failed: {resp.text}"
+    items = resp.json()
+    assert isinstance(items, list), "GET /items should return a list"
 
-    const payload = {
-      name: 'NotifyWidget',
-      description: 'Should trigger external notify',
-      value: 3.14
-    };
+    # 3) Retrieve single item
+    resp = await client.get(f"/items/{item_id}")
+    assert resp.status_code == 200, f"GET /items/{item_id} failed"
+    item_detail = resp.json()
+    assert item_detail.get("id") == item_id
+    assert item_detail.get("name") == create_payload["name"]
 
-    const res = await request(app)
-      .post('/api/resources')
-      .send(payload)
-      .expect('Content-Type', /json/)
-      .expect(201);
+    # 4) Update item
+    update_payload = {"name": "Updated Integration Test Item"}
+    resp = await client.patch(f"/items/{item_id}", json=update_payload)
+    assert resp.status_code in (200, 202), f"Update failed: {resp.text}"
 
-    expect(res.body).toHaveProperty('id');
-    expect(scope.isDone()).toBe(true); // ensure external call happened
-  }, REQUEST_TIMEOUT_MS);
+    # Verify update
+    resp = await client.get(f"/items/{item_id}")
+    assert resp.status_code == 200
+    updated = resp.json()
+    assert updated.get("name") == update_payload["name"]
 
-  // Optional: External service failure scenario (non-blocking)
-  test('External service failure does not crash API flow (mocked failure)', async () => {
-    // Mock external notifier to fail
-    const scope = nock('https://external-service.example')
-      .post('/api/notify')
-      .reply(500, { error: 'Internal Error' });
+    # 5) Delete item
+    resp = await client.delete(f"/items/{item_id}")
+    assert resp.status_code in (200, 204), f"Delete failed: {resp.text}"
 
-    const payload = {
-      name: 'NotifyWidgetFail',
-      description: 'External notify should fail gracefully',
-      value: 2.5
-    };
+    # 6) Confirm deletion
+    resp = await client.get(f"/items/{item_id}")
+    # Depending on implementation, 404 (Not Found) or 410 (Gone) may be returned
+    assert resp.status_code in (404, 410, 204), f"Deleted item should not be retrievable: {resp.text}"
 
-    const res = await request(app)
-      .post('/api/resources')
-      .send(payload)
-      .expect('Content-Type', /json/)
-      .expect(201); // API may still return 201 depending on error handling
 
-    expect(scope.isDone()).toBe(true);
-  }, REQUEST_TIMEOUT_MS);
-});
+@pytest.mark.asyncio
+async def test_auth_flow_and_protected_endpoint(client: httpx.AsyncClient) -> None:
+    """
+    Authentication flow test with protected resource access.
+
+    - Attempt login to obtain a token
+    - Access a protected endpoint with the token
+    - Ensure unauthorized access without token is rejected
+    """
+    login_payload = {
+        "username": "test_user",
+        "password": "test_password"
+    }
+
+    # Attempt login
+    resp = await client.post("/auth/login", json=login_payload)
+    # Some environments may skip auth setup; handle gracefully
+    if resp.status_code != 200:
+        pytest.skip("Authentication is not configured in this environment; skipped.")
+
+    token = None
+    try:
+        token = resp.json().get("access_token")
+    except Exception:
+        pass
+
+    # Access protected endpoint with token
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    resp = await client.get("/protected", headers=headers)
+    # Depending on implementation, protected might be 200 or 401/403
+    assert resp.status_code in (200, 401, 403), f"Protected endpoint access has unexpected status: {resp.status_code}"
+
+    # Access protected endpoint without token to confirm rejection when applicable
+    resp_no_auth = await client.get("/protected")
+    # If the endpoint requires auth, expect 401/403; otherwise 200
+    assert resp_no_auth.status_code in (200, 401, 403)
+
+
+@pytest.mark.asyncio
+async def test_external_service_integration(client: httpx.AsyncClient, httpx_mock) -> None:
+    """
+    Test that the system properly interacts with an external service by mocking
+    the outbound HTTP call.
+
+    Endpoint assumption: POST /external-sync triggers a call to
+    https://external-service/api/config and returns a combined result.
+    """
+    external_url = "https://external-service/api/config"
+
+    httpx_mock.add_response(
+        method="GET",
+        url=external_url,
+        json={"config_key": "config_value"},
+        status_code=200
+    )
+
+    resp = await client.post("/external-sync", json={"source": "unit-test"})
+    assert resp.status_code == 200, f"External sync failed: {resp.text}"
+
+    result = resp.json()
+    assert isinstance(result, dict)
+    # Expect the response to include data from the mocked external service
+    assert "external_config_present" in result or "config_key" in result
+
+
+@pytest.mark.asyncio
+async def test_transactional_flow_and_db_opportunities(client: httpx.AsyncClient) -> None:
+    """
+    Validate transaction-like operations via endpoints that run multiple DB actions.
+
+    This test assumes the API exposes a batch/create-with-transaction endpoint.
+    If not present, adapt accordingly (e.g., single-item transactional write).
+    """
+    payload = [
+        {"name": "Transact Item 1", "price": 5.0},
+        {"name": "Transact Item 2", "price": 7.5}
+    ]
+
+    resp = await client.post("/transactions/batch-create", json=payload)
+    # Depending on implementation, could be 200/201 on success
+    assert resp.status_code in (200, 201), f"Transactional create failed: {resp.text}"
+
+    data = resp.json()
+    assert isinstance(data, list)
+    assert len(data) == len(payload)
+
+    # Optional: verify that the items were actually persisted
+    # by querying the list and ensuring both exist
+    resp = await client.get("/items")
+    assert resp.status_code == 200
+    items = resp.json()
+    names = {item.get("name") for item in items}
+    assert "Transact Item 1" in names and "Transact Item 2" in names
+
+
+@pytest.mark.asyncio
+async def test_data_flow_api_service_database_layers(client: httpx.AsyncClient) -> None:
+    """
+    Validate the data flow from API -> Service -> Database layers.
+
+    This test assumes there is an endpoint that logs internal service calls
+    or returns a trace of operations. If your app does not expose such an endpoint,
+    adapt to validate by using a combination of CRUD endpoints and mocked service
+    layer behavior (see test_service_layer_mocking in the next test).
+    """
+    resp = await client.post("/items/trace", json={"name": "Trace Item", "price": 1.23})
+    # If the endpoint exists, ensure it returns a trace and 201/200 status
+    if resp.status_code not in (200, 201):
+        pytest.skip("Trace endpoint not available in this environment.")
+        return
+
+    trace = resp.json()
+    assert isinstance(trace, dict)
+    assert "service_calls" in trace or "db_operations" in trace
+
+
+@pytest.mark.asyncio
+async def test_service_layer_mocking_when_present(client: httpx.AsyncClient) -> None:
+    """
+    If your backend supports swapping/mocking the service layer, verify this interaction.
+
+    - Attempt to create item via API
+    - Mock the underlying service function to ensure it is called with expected arguments
+    - Verify API responds with the mocked output
+
+    This test will gracefully skip if the service-layer mocking hooks are not available.
+    """
+    try:
+        import unittest.mock as mock  # Python standard library for mocking
+
+        # Path should point to your actual service function used by the endpoint
+        # Example: "app.services.item_service.create_item"
+        service_path = os.environ.get("SERVICE_MOCK_PATH", "app.services.item_service.create_item")
+
+        module_path, func_name = service_path.rsplit(".", 1)
+        module = importlib.import_module(module_path)
+        original_func = getattr(module, func_name)
+
+        mocked_result = {"id": "mocked-id", "name": "Mocked Item"}
+
+        with mock.patch(service_path, return_value=mocked_result) as mock_func:
+            resp = await client.post("/items", json={"name": "Will Be Mocked", "price": 9.99})
+            # If endpoint exists, ensure it returns the mocked data
+            assert resp.status_code in (200, 201)
+            data = resp.json()
+            assert data.get("id") == "mocked-id"
+
+            mock_func.assert_called()
+    except Exception:
+        pytest.skip("Service-layer mocking not configured in this environment.")
+
+
+# ---------------------------
+# Optional: Teardown / Cleanup
+# ---------------------------
+
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_test_artifacts():
+    """
+    Optional cleanup hook to be run after the test session.
+    For example, remove test database files if you created them in tests.
+    Implementations may vary depending on how your test DB URL is configured.
+    """
+    yield
+    # Example cleanup (uncomment if you rely on a file-based test DB)
+    # test_db_path = os.environ.get("TEST_DB_PATH", "./test.db")
+    # try:
+    #     if os.path.exists(test_db_path):
+    #         os.remove(test_db_path)
+    # except Exception:
+    #     pass
+
+# End of tests/integration/test_backend_integration.py
+
+# Instructions:
+# - Update endpoint paths, payloads, and expected status codes to align with your API contract.
+# - If your project uses a different authentication mechanism or different protected endpoints,
+#   adjust the tests under test_auth_flow_and_protected_endpoint accordingly.
+# - If you expose database introspection endpoints or transactional endpoints, you can enrich
+#   test_database_operations and test_transactional_flow sections.

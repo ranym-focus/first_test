@@ -1,227 +1,291 @@
-import React, { useState, useEffect } from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import '@testing-library/jest-dom';
+import React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route, Link } from 'react-router-dom';
+import { Provider, useDispatch, useSelector } from 'react-redux';
+import { createStore } from 'redux';
+import { rest, setupServer } from 'msw';
+import '@testing-library/jest-dom/extend-expect';
 
-// Simple ListItem that supports a like interaction
-const ListItem = ({ item, onLike }) => (
-  <li data-testid={`item-${item.id}`}>
-    <span>{item.name}</span>
-    {typeof item.likes !== 'undefined' ? <span> {item.likes} likes</span> : null}
-    <button onClick={() => onLike(item.id)}>Like</button>
-  </li>
-);
-
-// List rendering
-const List = ({ items, onLike }) => (
-  <ul data-testid="item-list">
-    {items.map((it) => (
-      <ListItem key={it.id} item={it} onLike={onLike} />
-    ))}
-  </ul>
-);
-
-// Form to add new items with basic validation
-const AddItemForm = ({ onAdd }) => {
-  const [name, setName] = useState('');
-  const [touched, setTouched] = useState(false);
-
-  const onSubmit = (e) => {
-    e.preventDefault();
-    if (!name.trim()) {
-      setTouched(true);
-      return;
-    }
-    onAdd(name.trim());
-    setName('');
-  };
-
-  return (
-    <form onSubmit={onSubmit} aria-label="add-item-form">
-      <input aria-label="item-name" value={name} onChange={(e) => setName(e.target.value)} />
-      <button type="submit">Add</button>
-      {touched && !name && <span role="alert">Name is required</span>}
-    </form>
-  );
-};
-
-// Data page simulating API data fetch and data flow to List and AddItemForm
-const DataPage = () => {
-  const [items, setItems] = useState([]);
-
-  useEffect(() => {
-    fetch('/api/items')
-      .then((res) => res.json())
-      .then((data) => setItems(data.items || []))
-      .catch(() => setItems([]));
-  }, []);
-
-  const likeItem = (id) => {
-    setItems((prev) =>
-      prev.map((it) => (it.id === id ? { ...it, likes: (it.likes || 0) + 1 } : it))
-    );
-  };
-
-  const addItem = (name) => {
-    const newItem = { id: Date.now(), name, likes: 0 };
-    setItems((prev) => [...prev, newItem]);
-  };
-
-  return (
-    <section aria-label="data-page">
-      <h2>Data</h2>
-      <List items={items} onLike={likeItem} />
-      <AddItemForm onAdd={addItem} />
-    </section>
-  );
-};
-
-// Home view with internal state management (increment counter)
-const HomeView = () => {
-  const [count, setCount] = useState(0);
-  return (
-    <section aria-label="home-page">
-      <h2>Home</h2>
-      <p>Count: {count}</p>
-      <button onClick={() => setCount((c) => c + 1)}>Increment</button>
-      <nav aria-label="main-nav">
-        <Link to="/data">Data</Link>
-      </nav>
-    </section>
-  );
-};
-
-// App wiring up routes generically (no reliance on specific app structure)
-const App = () => (
-  <div>
+// --------- Generic App Router for Navigation Tests ----------
+const AppRouter = () => (
+  <MemoryRouter initialEntries={['/']}>
+    <nav>
+      <Link to="/" data-testid="nav-home">Home</Link>
+      <Link to="/about" data-testid="nav-about">About</Link>
+      <Link to="/dashboard" data-testid="nav-dashboard">Dashboard</Link>
+    </nav>
     <Routes>
-      <Route path="/home" element={<HomeView />} />
-      <Route path="/data" element={<DataPage />} />
-      <Route path="*" element={<HomeView />} />
+      <Route path="/" element={<div data-testid="route-home">Home Page</div>} />
+      <Route path="/about" element={<div data-testid="route-about">About Page</div>} />
+      <Route path="/dashboard" element={<div data-testid="route-dashboard">Dashboard Page</div>} />
     </Routes>
+  </MemoryRouter>
+);
+
+// --------- Component Interaction and Data Flow Components ----------
+const CounterDisplay = ({ value }) => (
+  <div data-testid="counter-display">Count: {value}</div>
+);
+
+const CounterControls = ({ onIncrement, onDecrement }) => (
+  <div>
+    <button onClick={onIncrement} data-testid="increment-btn">Increment</button>
+    <button onClick={onDecrement} data-testid="decrement-btn">Decrement</button>
   </div>
 );
 
-// Tests
-describe('Generic React frontend integration tests (React Testing Library)', () => {
-  // Mock API calls
-  beforeEach(() => {
-    jest.spyOn(global, 'fetch').mockImplementation((url) => {
-      if (url === '/api/items') {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            items: [
-              { id: 1, name: 'Alpha' },
-              { id: 2, name: 'Beta' },
-            ],
-          }),
-        });
-      }
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({}),
+const CounterContainer = () => {
+  const [count, setCount] = React.useState(0);
+  return (
+    <div>
+      <CounterDisplay value={count} />
+      <CounterControls
+        onIncrement={() => setCount((c) => c + 1)}
+        onDecrement={() => setCount((c) => c - 1)}
+      />
+    </div>
+  );
+};
+
+// --------- Redux State Management Test Components ----------
+const initialReduxState = { value: 0 };
+
+function reduxReducer(state = initialReduxState, action) {
+  switch (action.type) {
+    case 'INCREMENT':
+      return { value: state.value + 1 };
+    default:
+      return state;
+  }
+}
+
+const ReduxCounter = () => {
+  const value = useSelector((s) => s.value);
+  const dispatch = useDispatch();
+  return (
+    <div>
+      <span data-testid="redux-value">{value}</span>
+      <button onClick={() => dispatch({ type: 'INCREMENT' })}>Increment</button>
+    </div>
+  );
+};
+
+// --------- API Integration Components (MSW) ----------
+function UserList() {
+  const [users, setUsers] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    fetch('/api/users')
+      .then((r) => r.json())
+      .then((data) => {
+        setUsers(data.users);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err);
+        setLoading(false);
       });
+  }, []);
+
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error</div>;
+
+  return (
+    <ul>
+      {users.map((u) => (
+        <li key={u.id}>{u.name}</li>
+      ))}
+    </ul>
+  );
+}
+
+// --------- Form Submission and Validation Components ----------
+function LoginForm({ onSubmit }) {
+  const [username, setUsername] = React.useState('');
+  const [password, setPassword] = React.useState('');
+  const [error, setError] = React.useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!username || !password) {
+      setError('Username and password required');
+      return;
+    }
+    onSubmit({ username, password });
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input
+        placeholder="Username"
+        value={username}
+        onChange={(e) => setUsername(e.target.value)}
+        data-testid="username"
+      />
+      <input
+        placeholder="Password"
+        type="password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        data-testid="password"
+      />
+      <button type="submit" data-testid="submit-btn">Login</button>
+      {error && <span role="alert">{error}</span>}
+    </form>
+  );
+}
+
+// --------- Data Flow Between Components (Parent/Child) ----------
+function DataFlowChild({ value, onChange }) {
+  return (
+    <input
+      data-testid="child-input"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
+function DataFlowParent() {
+  const [text, setText] = React.useState('initial');
+  return (
+    <div>
+      <DataFlowChild value={text} onChange={setText} />
+      <div data-testid="parent-text">{text}</div>
+    </div>
+  );
+}
+
+// --------- MSW Server Setup for API Mocking ----------
+const server = setupServer(
+  rest.get('/api/users', (req, res, ctx) =>
+    res(ctx.json({ users: [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }] }))
+  )
+);
+
+beforeAll(() => server.listen());
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
+// --------- Tests: Comprehensive Frontend Integration Tests ----------
+describe('Generic React App Integration (Synthetic Routes/Components)', () => {
+  // Navigation tests
+  test('navigation between generic routes updates content', async () => {
+    render(<AppRouter />);
+
+    // Default route
+    expect(screen.getByTestId('route-home')).toBeInTheDocument();
+
+    // Navigate to About
+    userEvent.click(screen.getByTestId('nav-about'));
+    await waitFor(() => {
+      expect(screen.getByTestId('route-about')).toBeInTheDocument();
+    });
+
+    // Navigate to Dashboard
+    userEvent.click(screen.getByTestId('nav-dashboard'));
+    await waitFor(() => {
+      expect(screen.getByTestId('route-dashboard')).toBeInTheDocument();
+    });
+
+    // Back to Home
+    userEvent.click(screen.getByTestId('nav-home'));
+    await waitFor(() => {
+      expect(screen.getByTestId('route-home')).toBeInTheDocument();
     });
   });
 
-  afterEach(() => {
-    jest.restoreAllMocks();
+  // Component interactions and data flow
+  test('component interactions propagate data flow from parent to child', () => {
+    render(<CounterContainer />);
+
+    // Initial value
+    expect(screen.getByTestId('counter-display').textContent).toContain('Count: 0');
+
+    // Increment
+    userEvent.click(screen.getByTestId('increment-btn'));
+    expect(screen.getByTestId('counter-display').textContent).toContain('Count: 1');
+
+    // Decrement
+    userEvent.click(screen.getByTestId('decrement-btn'));
+    expect(screen.getByTestId('counter-display').textContent).toContain('Count: 0');
   });
 
-  test('navigation between Home and Data routes', async () => {
+  // State management with Redux
+  test('Redux state management updates via dispatch', () => {
+    const store = createStore(reduxReducer);
     render(
-      <MemoryRouter initialEntries={['/home']}>
-        <App />
-      </MemoryRouter>
+      <Provider store={store}>
+        <ReduxCounter />
+      </Provider>
     );
 
-    // Home view should render
-    expect(screen.getByText('Home')).toBeInTheDocument();
+    // Initial value
+    expect(screen.getByTestId('redux-value').textContent).toBe('0');
 
-    // Navigate to Data via Link
-    fireEvent.click(screen.getByText('Data'));
-
-    // Data page should render after navigation
-    await waitFor(() => expect(screen.getByText('Data')).toBeInTheDocument());
-    expect(screen.getByText('Data')).toBeInTheDocument();
+    // Dispatch increment
+    userEvent.click(screen.getByText('Increment'));
+    expect(screen.getByTestId('redux-value').textContent).toBe('1');
   });
 
-  test('DataPage fetches items and displays them', async () => {
-    render(
-      <MemoryRouter initialEntries={['/data']}>
-        <App />
-      </MemoryRouter>
-    );
+  // API integration and data fetching
+  test('API integration: fetch and render users', async () => {
+    render(<UserList />);
 
-    // Wait for API items to render
-    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
-    expect(screen.getByText('Beta')).toBeInTheDocument();
+    // Loading state shown first
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
+
+    // Wait for data
+    await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
+    expect(screen.getByText('Bob')).toBeInTheDocument();
   });
 
-  test('like button increments like count and updates UI', async () => {
-    render(
-      <MemoryRouter initialEntries={['/data']}>
-        <App />
-      </MemoryRouter>
+  test('API integration: handles API failure gracefully', async () => {
+    server.use(
+      rest.get('/api/users', (req, res, ctx) =>
+        res(ctx.status(500))
+      )
     );
 
-    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    render(<UserList />);
 
-    const likeButtons = screen.getAllByText('Like');
-    // Like the first item (Alpha)
-    fireEvent.click(likeButtons[0]);
-
-    await waitFor(() => expect(screen.getByText('1 likes')).toBeInTheDocument());
+    // Loading state then error
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument());
   });
 
-  test('add item form submits new item', async () => {
-    render(
-      <MemoryRouter initialEntries={['/data']}>
-        <App />
-      </MemoryRouter>
+  // Form submissions and validations
+  test('form submission passes data to onSubmit and validates inputs', async () => {
+    const mockSubmit = jest.fn();
+    render(<LoginForm onSubmit={mockSubmit} />);
+
+    // Empty submission should trigger validation error
+    userEvent.click(screen.getByTestId('submit-btn'));
+    expect(screen.getByRole('alert')).toHaveTextContent('Username and password required');
+
+    // Fill form and submit
+    userEvent.type(screen.getByTestId('username'), 'john');
+    userEvent.type(screen.getByTestId('password'), 'secret');
+    userEvent.click(screen.getByTestId('submit-btn'));
+
+    await waitFor(() =>
+      expect(mockSubmit).toHaveBeenCalledWith({ username: 'john', password: 'secret' })
     );
-
-    await waitFor(() => screen.getByLabelText('item-name'));
-
-    const input = screen.getByLabelText('item-name');
-    const addButton = screen.getByText('Add');
-
-    // Submit a new item
-    fireEvent.change(input, { target: { value: 'Gamma' } });
-    fireEvent.click(addButton);
-
-    // New item should appear in the list
-    await waitFor(() => expect(screen.getByText('Gamma')).toBeInTheDocument());
   });
 
-  test('form validation shows error for empty submission', async () => {
-    render(
-      <MemoryRouter initialEntries={['/data']}>
-        <App />
-      </MemoryRouter>
-    );
+  // Data flow between components (parent passes data to child and child updates parent)
+  test('data flow between parent and child components', () => {
+    render(<DataFlowParent />);
 
-    await waitFor(() => screen.getByText('Add'));
+    // Initial parent text
+    expect(screen.getByTestId('parent-text').textContent).toBe('initial');
 
-    const addButton = screen.getByText('Add');
-    // Submit with empty name
-    fireEvent.click(addButton);
-
-    // Validation message should appear
-    await waitFor(() => expect(screen.getByText('Name is required')).toBeInTheDocument());
-  });
-
-  test('data flow from DataPage to ListItem is visible in UI', async () => {
-    render(
-      <MemoryRouter initialEntries={['/data']}>
-        <App />
-      </MemoryRouter>
-    );
-
-    // Ensure data is loaded and the item text is rendered
-    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
-    const item = screen.getByText('Alpha').closest('li');
-    expect(item).toBeInTheDocument();
+    // Change via child input
+    userEvent.type(screen.getByTestId('child-input'), 'updated');
+    // The input value updates immediately; ensure parent's text reflects change
+    expect(screen.getByTestId('parent-text').textContent).toBe('updated');
   });
 });

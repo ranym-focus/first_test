@@ -1,169 +1,198 @@
 import { test, expect } from '@playwright/test';
 
-type LocatorLike = {
-  count(): Promise<number>;
-  first(): LocatorLike;
-  fill?(value: string): Promise<void>;
-  click?(): Promise<void>;
-  evaluate?(fn: (f: any) => void): Promise<void>;
-};
+// Attempt to import the helper functions from the target file.
+// If the functions are not exported in your environment, you may need to export them
+// from e2e.spec.ts for these unit tests to work.
+import {
+  gotoSafe,
+  pageHasForm,
+  isAuthFormPresent,
+  performLogin,
+  ensureLogoutIfPresent,
+} from './e2e.spec';
 
-class MockLocator implements LocatorLike {
-  private countValue: number;
-  public filled: boolean = false;
-  public clicked: boolean = false;
-  public evaluated: boolean = false;
+// Lightweight mock implementations to simulate Playwright Page and Locator behaviors
+class MockElement {
+  constructor(private page: MockPage, private selector: string, private attrs: { [k: string]: string | undefined }) {}
 
-  constructor(countValue: number) {
-    this.countValue = countValue;
+  async fill(value: string) {
+    this.page.recordFill(this.selector, value);
+  }
+
+  async click() {
+    this.page.recordClick(this.selector);
+  }
+
+  async press(_key: string) {
+    this.page.recordKeyPress(_key);
+  }
+
+  async getAttribute(name: string): Promise<string | null> {
+    return this.attrs[name] ?? null;
+  }
+
+  // Simulate evaluate((el) => el.tagName.toLowerCase())
+  async evaluate<T>(fn: (el: any) => T): Promise<T> {
+    const fakeEl = { tagName: (this.attrs['tagName'] ?? 'INPUT') };
+    // @ts-ignore
+    return fn(fakeEl);
+  }
+}
+
+class MockLocator {
+  constructor(private page: MockPage, private selector: string) {}
+
+  first(): MockElement {
+    // Determine basic attributes from selector for the mocked element
+    const hasUsername = this.selector.includes('username');
+    const hasPassword = this.selector.includes('password');
+    const isSelect = this.selector.includes('select');
+    const tagName = isSelect ? 'select' : 'input';
+    const attrs: { [k: string]: string | undefined } = {
+      name: hasUsername ? 'username' : hasPassword ? 'password' : (this.selector.includes('name=') ? 'name' : undefined),
+      type: this.selector.includes('type="password"') ? 'password' : 'text',
+      tagName,
+    };
+    return new MockElement(this.page, this.selector, attrs);
   }
 
   async count(): Promise<number> {
-    return this.countValue;
-  }
-
-  first(): LocatorLike {
-    // Return self for chaining in tests
-    return this;
-  }
-
-  async fill(_value: string): Promise<void> {
-    this.filled = true;
-  }
-
-  async click(): Promise<void> {
-    this.clicked = true;
-  }
-
-  async evaluate(_fn: (f: any) => void): Promise<void> {
-    this.evaluated = true;
-    // Simulate form.submit() call
-    _fn({ submit: () => {} });
+    return this.page.countForSelector(this.selector);
   }
 }
 
 class MockPage {
-  passwordLocator: MockLocator;
-  usernameLocator: MockLocator;
-  submitLocator: MockLocator;
-  formLocator: MockLocator;
-  waited: boolean = false;
+  // Map of selector -> count (to simulate presence of elements)
+  private counts = new Map<string, number>();
+  // Recording interactions
+  public fills: Array<{ selector: string; value: string }> = [];
+  public clicks: string[] = [];
+  public keyPresses: string[] = [];
+  public lastGoto: string | null = null;
 
-  constructor(cfg: { passwordCount: number; userCount: number; submitCount: number; formCount: number }) {
-    this.passwordLocator = new MockLocator(cfg.passwordCount);
-    this.usernameLocator = new MockLocator(cfg.userCount);
-    this.submitLocator = new MockLocator(cfg.submitCount);
-    this.formLocator = new MockLocator(cfg.formCount);
+  // Keyboard helper (as used by performLogin)
+  public keyboard = {
+    press: async (key: string) => {
+      this.keyPresses.push(key);
+    },
+  };
+
+  goto(url: string, _opts: any) {
+    this.lastGoto = url;
+    return Promise.resolve();
   }
 
-  locator(selector: string): LocatorLike {
-    if (selector.includes('input[type="password"]')) return this.passwordLocator;
-    if (
-      selector.includes('input[name="username"]') ||
-      selector.includes('input[name="email"]')
-    )
-      return this.usernameLocator;
-    if (
-      selector.includes('button') &&
-      (selector.includes('type="submit"') ||
-        selector.includes('has-text("Login")') ||
-        selector.includes('has-text("Sign in")'))
-    )
-      return this.submitLocator;
-    if (selector.includes('form') || selector === 'form')
-      return this.formLocator;
-    return new MockLocator(0);
+  locator(selector: string) {
+    // Return a mock locator for any selector
+    return new MockLocator(this, selector);
   }
 
-  async waitForLoadState(_state: string): Promise<void> {
-    this.waited = true;
-    return;
+  waitForLoadState(_state: string, _opts?: any) {
+    return Promise.resolve();
+  }
+
+  setCount(selector: string, count: number) {
+    this.counts.set(selector, count);
+  }
+
+  countForSelector(selector: string): number {
+    return this.counts.get(selector) ?? 0;
+  }
+
+  recordFill(selector: string, value: string) {
+    this.fills.push({ selector, value });
+  }
+
+  recordClick(selector: string) {
+    this.clicks.push(selector);
+  }
+
+  recordKeyPress(_key: string) {
+    // Normalize to indicate a press happened
+    this.keyPresses.push(_key);
+  }
+
+  // Helpers used by tests
+  hasClicked(selector: string): boolean {
+    return this.clicks.includes(selector);
   }
 }
 
-// Re-implement the loginIfPossible logic inside tests to unit-test the helper behavior
-async function loginIfPossibleFromTest(page: MockPage): Promise<boolean> {
-  const passwordInputs = page.locator('input[type="password"]');
-  if ((await passwordInputs.count()) === 0) return false;
-
-  const usernameInputs = page.locator('input[name="username"], input[name="email"]');
-  if ((await usernameInputs.count()) > 0) {
-    await usernameInputs.first().fill(process.env.TEST_USERNAME || 'test@example.com');
-  }
-
-  await passwordInputs.first().fill(process.env.TEST_PASSWORD || 'password');
-
-  const submitBtn = page.locator(
-    'button[type="submit"], button:has-text("Login"), button:has-text("Sign in")'
-  );
-  if ((await submitBtn.count()) > 0) {
-    await submitBtn.first().click();
-    await page.waitForLoadState('networkidle').catch(() => {});
-    return true;
-  }
-
-  // Fallback: try submitting the form directly
-  const form = page.locator('form').first();
-  if ((await form.count()) > 0) {
-    await form.evaluate((f: any) => f.submit());
-    await page.waitForLoadState('networkidle').catch(() => {});
-    return true;
-  }
-
-  return true;
-}
-
-test.describe('Comprehensive E2E Helpers Unit Tests (Mocked)', () => {
-  test('fullURL logic (edge cases) - base with trailing slash and path without leading slash', async () => {
-    // Local pure function replicate for unit test visibility
-    const buildFullURL = (base: string, path: string) => {
-      const b = base.endsWith('/') ? base.slice(0, -1) : base;
-      const p = path.startsWith('/') ? path : '/' + path;
-      return b + p;
-    };
-
-    expect(buildFullURL('http://localhost:3000', '/dashboard')).toBe('http://localhost:3000/dashboard');
-    expect(buildFullURL('http://example.com/', 'items')).toBe('http://example.com/items');
-    expect(buildFullURL('https://site.org', '/settings')).toBe('https://site.org/settings');
+// Unit tests for helper functions
+test.describe('Unit tests for e2e.spec helpers (Playwright)', () => {
+  test('gotoSafe constructs the correct URL', async () => {
+    const mockPage = new MockPage();
+    // BASE_URL defaults to http://localhost:3000 per source; test against that
+    await gotoSafe(mockPage as any, '/home');
+    expect(mockPage.lastGoto).toBe('http://localhost:3000/home');
   });
 
-  test.describe('loginIfPossible unit (mocked page scenarios)', () => {
-    test('returns false when no password input is present', async () => {
-      const page = new MockPage({ passwordCount: 0, userCount: 0, submitCount: 0, formCount: 0 });
-      const result = await loginIfPossibleFromTest(page);
-      expect(result).toBe(false);
-    });
+  test('pageHasForm detects presence and absence of forms', async () => {
+    const mockPage1 = new MockPage();
+    mockPage1.setCount('form', 1);
+    // @ts-ignore
+    const hasForm1 = await pageHasForm(mockPage1 as any);
+    expect(hasForm1).toBe(true);
 
-    test('fills credentials and submits when submit button exists', async () => {
-      const page = new MockPage({ passwordCount: 1, userCount: 1, submitCount: 1, formCount: 0 });
-      process.env.TEST_USERNAME = 'user@example.com';
-      process.env.TEST_PASSWORD = 'secret';
-      const result = await loginIfPossibleFromTest(page);
-      expect(result).toBe(true);
-      // Assertions on interactions
-      expect(page.passwordLocator.filled).toBe(true);
-      expect(page.usernameLocator.filled).toBe(true);
-      expect(page.submitLocator.clicked).toBe(true);
-      // Ensure load state was awaited
-      expect(page.waited).toBe(true);
-    });
+    const mockPage2 = new MockPage();
+    mockPage2.setCount('form', 0);
+    // @ts-ignore
+    const hasForm2 = await pageHasForm(mockPage2 as any);
+    expect(hasForm2).toBe(false);
+  });
 
-    test('fallback to form submit when no explicit submit button exists', async () => {
-      const page = new MockPage({ passwordCount: 1, userCount: 0, submitCount: 0, formCount: 1 });
-      const result = await loginIfPossibleFromTest(page);
-      expect(result).toBe(true);
-      // Form submission path should have been evaluated
-      expect(page.formLocator.evaluated).toBe(true);
-      expect(page.waited).toBe(true);
-    });
+  test('isAuthFormPresent detects basic auth form presence', async () => {
+    const mockPage = new MockPage();
+    // Simulate an auth form with username and password fields present
+    mockPage.setCount('input[name="username"], input[name="email"]', 1);
+    mockPage.setCount('input[name="password"]', 1);
+    // @ts-ignore
+    const result = await isAuthFormPresent(mockPage as any);
+    expect(result).toBe(true);
+  });
 
-    test('continues gracefully when no submit button or form exists', async () => {
-      const page = new MockPage({ passwordCount: 1, userCount: 0, submitCount: 0, formCount: 0 });
-      const result = await loginIfPossibleFromTest(page);
-      expect(result).toBe(true);
-      // No submit, no form submission attempted
-      expect(page.passwordLocator.filled).toBe(true);
-      expect(page.formLocator.evaluated).toBe(false);
-    });
+  test('performLogin returns true when auth form present and logout indicator exists', async () => {
+    const mockPage = new MockPage();
+    mockPage.setCount('input[name="username"], input[name="email"]', 1);
+    mockPage.setCount('input[name="password"]', 1);
+    mockPage.setCount('button[type="submit"], button:has-text("Login"), input[type="submit"]', 1);
+    mockPage.setCount('text=Logout, text=Sign out, a[href*="logout"], button:has-text("Logout")', 1);
+
+    // Execute
+    // @ts-ignore
+    const result = await performLogin(mockPage as any);
+    expect(result).toBe(true);
+
+    // Verify that a login submit was attempted (click on submit)
+    // The exact selector used for submit is the composite; we recorded clicks to the locator
+    // Since our mock doesn't tie the specific submit selector after first(), we check that some click happened
+    expect(mockPage.clicks.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('performLogin returns false when no auth form is present', async () => {
+    const mockPage = new MockPage();
+    mockPage.setCount('input[name="username"], input[name="email"]', 0);
+    mockPage.setCount('input[name="password"]', 0);
+
+    // @ts-ignore
+    const result = await performLogin(mockPage as any);
+    expect(result).toBe(false);
+  });
+
+  test('ensureLogoutIfPresent clicks logout when present', async () => {
+    const mockPage = new MockPage();
+    mockPage.setCount('text=Logout, text=Sign out, a[href*="logout"], button:has-text("Logout")', 1);
+    // @ts-ignore
+    await ensureLogoutIfPresent(mockPage as any);
+    // The mock should record a click on the logout locator selector
+    expect(mockPage.clicks.length).toBeGreaterThan(0);
+  });
+
+  test('ensureLogoutIfPresent is a no-op when logout is not present', async () => {
+    const mockPage = new MockPage();
+    mockPage.setCount('text=Logout, text=Sign out, a[href*="logout"], button:has-text("Logout")', 0);
+    // @ts-ignore
+    await ensureLogoutIfPresent(mockPage as any);
+    expect(mockPage.clicks.length).toBe(0);
   });
 });
